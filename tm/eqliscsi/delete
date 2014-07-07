@@ -1,0 +1,151 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2014, Asociacion Clubs Baloncesto (acb.com)                      #
+# Author: Joaquin Villanueva                                                 #
+#                                                                            #
+# Portions copyright OpenNebula Project (OpenNebula.org), CG12 Labs          #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+# DELETE <host:remote_system_ds/disk.i|host:remote_system_ds/> vmid dsid
+#   - host is the target host to deploy the VM
+#   - remote_system_ds is the path for the system datastore in the host
+#   - vmid is the id of the VM
+#   - dsid is the target datastore (0 is the system datastore)
+
+DST=$1
+
+VMID=$2
+DSID=$3
+
+if [ -z "${ONE_LOCATION}" ]; then
+    TMCOMMON=/var/lib/one/remotes/tm/tm_common.sh
+else
+    TMCOMMON=$ONE_LOCATION/var/remotes/tm/tm_common.sh
+fi
+
+. $TMCOMMON
+
+TM_PATH=$(dirname $0)
+source ${TM_PATH}/../../datastore/eqliscsi/eqliscsi.conf
+source ${TM_PATH}/../../scripts_eqliscsi.sh
+
+#-------------------------------------------------------------------------------
+# Return if deleting a disk, we will delete them when removing the
+# remote_system_ds directory for the VM (remotely)
+#-------------------------------------------------------------------------------
+DST_PATH=`arg_path $DST`
+DST_HOST=`arg_host $DST`
+
+#-------------------------------------------------------------------------------
+# Get IQN information and EQL vars
+#-------------------------------------------------------------------------------
+
+DISK_ID=$(echo "$DST_PATH" | $AWK -F. '{print $NF}')
+
+XPATH="${TM_PATH}/../../datastore/xpath.rb --stdin"
+
+unset i XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(onevm show -x $VMID| $XPATH \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/SOURCE \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/PERSISTENT \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/DATASTORE_ID \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/IMAGE_ID)
+
+SRC="${XPATH_ELEMENTS[0]}"
+PERSISTENT="${XPATH_ELEMENTS[1]}"
+DSID="${XPATH_ELEMENTS[2]}"
+IMID="${XPATH_ELEMENTS[3]}"
+
+unset i XPATH_ELEMENTS
+
+# Get EQL vars from datastore DSID
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(onedatastore show -x $DSID| $XPATH \
+                    /DATASTORE/TEMPLATE/EQL_HOST \
+                    /DATASTORE/TEMPLATE/EQL_POOL \
+                    /DATASTORE/TEMPLATE/EQL_USER \
+                    /DATASTORE/TEMPLATE/EQL_PASS)
+
+EQL_HOST="${XPATH_ELEMENTS[0]:-$EQL_HOST}"
+EQL_POOL="${XPATH_ELEMENTS[1]:-$EQL_POOL}"
+EQL_USER="${XPATH_ELEMENTS[2]:-$EQL_USER}"
+EQL_PASS="${XPATH_ELEMENTS[3]:-$EQL_PASS}"
+
+#-------------------------------------------------------------------------------
+# Retrieve volume and IQN from iscsi discovery database if not persistent
+# Equallogic generates IQN with random numbers when cloning source image (not stored in VM template)
+# If persistent, get them from VM template
+#-------------------------------------------------------------------------------
+if [ -z "$PERSISTENT" ]; then
+    SRC=$SRC-$VMID
+    EQL_VOLUME="$(eql_src_get_volume $SRC)"
+    IQN="$(eqliscsi_get_iqn_client $EQL_VOLUME)"
+else
+    IQN="$(eql_src_get_iqn $SRC)"
+    EQL_VOLUME="$(eql_src_get_volume $SRC)"
+fi
+
+
+#-------------------------------------------------------------------------------
+# Remove directory if dst_path is a directory
+#-------------------------------------------------------------------------------
+
+if [ `is_disk $DST_PATH` -eq 0 ]; then
+    # Directory
+    log "Deleting $DST_PATH"
+    eql_ssh_exec_and_log "$DST_HOST" "rm -rf $DST_PATH" \
+	"Error deleting $DST_PATH" \
+	"exit"
+    exit 0
+fi
+
+#-------------------------------------------------------------------------------
+# Logout from the iSCSI target in the hypervisor
+#-------------------------------------------------------------------------------
+
+LOGOUT_CMD=$(cat <<EOF
+    set -e
+    $SUDO $(eqliscsi_logout "$IQN")
+EOF
+)
+
+eql_ssh_exec_and_log "$DST_HOST" "$LOGOUT_CMD" \
+    "Error logging out $DST_HOST:$IQN" \
+    "exit"
+
+#-------------------------------------------------------------------------------
+# Remove target volume in the Equallogic
+#-------------------------------------------------------------------------------
+
+# Don't delete if persistent
+if [ "$PERSISTENT" = "YES" ]; then
+    exit 0
+fi
+
+# Remote volume remove on Equallogic
+log "Removing volume $IQN from $EQL_HOST"
+RETVAL=$(eqladm_target_delete $EQL_VOLUME)
+ERROR=$?
+if [ "$ERROR" -ne 0 ]; then
+    log_error "Error deleting volume $EQL_VOLUME on $EQL_HOST $RETVAL"
+    exit 1
+fi
+
+exit 0

@@ -1,0 +1,49 @@
+# -------------------------------------------------------------------------- #
+# Copyright 2014, Asociacion Clubs Baloncesto (acb.com)                      #
+# Author: Joaquin Villanueva                                                 #
+#                                                                            #
+# Portions copyright OpenNebula Project (OpenNebula.org), CG12 Labs          #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+# Default Equalogic iSCSI group host
+EQL_HOST="192.168.0.1"
+EQL_POOL="sample_pool"
+EQL_USER="sample_user"
+EQL_PASS="sample_pass"
+
+#EQL_MULTIHOST="<enable|disable>"
+#EQL_SECURITY_ACCESS="apply-to <volume|snapshot|both> authmethod <chap|none> username <user_name> ipaddress <ip_address> initiator <initiator_name>"
+
+EQL_MULTIHOST="enable"
+EQL_SECURITY_ACCESS="ipaddress 192.168.*.*"
+
+EQL_THINPROVISION="thin-provision thin-min-reserve 50%"
+
+#EQL_BASE_DEVICE="/dev/eql"
+EQL_BASE_DEVICE="/dev/iscsi"
+
+# Default iSCSI interface for discovery
+EQL_IFACE="eql00"
+
+# Seconds to wait after some login/logout operations
+EQL_WAIT_TIME=1
+
+# Lists of hosts (separated by spaces) for which no iscsiadm login or logout
+# is performed.
+NO_ISCSI=""
+
+# Utilities
+EQLADM=EqlCliExec.py
+EQLEHCM=ehcmcli

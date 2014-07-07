@@ -1,0 +1,95 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2014, Asociacion Clubs Baloncesto (acb.com)                      #
+# Author: Joaquin Villanueva                                                 #
+#                                                                            #
+# Portions copyright OpenNebula Project (OpenNebula.org), CG12 Labs          #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+# cpds host:remote_system_ds/disk.i fe:SOURCE
+#   - fe is the front-end hostname
+#   - SOURCE is the path of the disk image in the form DS_BASE_PATH/disk
+#   - host is the target host to deploy the VM
+#   - remote_system_ds is the path for the system datastore in the host
+#   - vmid is the id of the VM
+#   - dsid is the target datastore (0 is the system datastore)
+
+SRC=$1
+DST=$2
+
+VMID=$3
+DSID=$4
+
+if [ -z "${ONE_LOCATION}" ]; then
+    TMCOMMON=/var/lib/one/remotes/tm/tm_common.sh
+else
+    TMCOMMON=$ONE_LOCATION/var/remotes/tm/tm_common.sh
+fi
+
+. $TMCOMMON
+
+TM_PATH=$(dirname $0)
+source ${TM_PATH}/../../datastore/eqliscsi/eqliscsi.conf
+source ${TM_PATH}/../../scripts_eqliscsi.sh
+
+SRC_HOST=`arg_host $SRC`
+EQL_NEW_VOLUME="$DST"
+
+DISK_ID=$(echo $SRC|awk -F. '{print $NF}')
+
+#-------------------------------------------------------------------------------
+# Get image information
+#-------------------------------------------------------------------------------
+
+XPATH="${TM_PATH}/../../datastore/xpath.rb --stdin"
+
+unset i XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(onevm show -x $VMID| $XPATH \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/SOURCE \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/SAVE_AS \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/PERSISTENT)
+
+SRC="${XPATH_ELEMENTS[0]}"
+SAVE_AS="${XPATH_ELEMENTS[1]}"
+PERSISTENT="${XPATH_ELEMENTS[2]}"
+
+if [ -z "$PERSISTENT" ]; then
+    SRC=$SRC-$VMID
+fi
+
+EQL_HOST="$(eql_src_get_host $SRC)"
+IQN="$(eql_src_get_iqn $SRC)"
+EQL_VOLUME="$(eql_src_get_volume $SRC)"
+EQL_DEV="$EQL_BASE_DEVICE/$EQL_VOLUME"
+
+#-------------------------------------------------------------------------------
+# Clone volume and set config
+#-------------------------------------------------------------------------------
+
+# Remote volume cloning on Equallogic (returns IQN)
+log "Cloning volume $EQL_VOLUME on $EQL_HOST to $EQL_NEW_VOLUME"
+IQN=$(eqladm_target_clone $EQL_VOLUME $EQL_NEW_VOLUME "$EQL_VOL_DESCRIPTION")
+ERROR=$?
+if [ "$ERROR" -ne 0 ]; then
+    log_error "Error cloning from volume $EQL_VOLUME to $EQL_NEW_VOLUME on $EQL_HOST $IQN"
+    exit 1
+fi
+log "Cloned image $IQN to $EQL_NEW_VOLUME"
+
+exit 0

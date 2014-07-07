@@ -1,0 +1,80 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2014, Asociacion Clubs Baloncesto (acb.com)                      #
+# Author: Joaquin Villanueva                                                 #
+#                                                                            #
+# Portions copyright OpenNebula Project (OpenNebula.org), CG12 Labs          #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+###############################################################################
+# This script is used to monitor the free and used space of a datastore
+###############################################################################
+
+# -------- Set up the environment to source common tools & conf ------------
+
+if [ -z "${ONE_LOCATION}" ]; then
+    LIB_LOCATION=/usr/lib/one
+else
+    LIB_LOCATION=$ONE_LOCATION/lib
+fi
+
+. $LIB_LOCATION/sh/scripts_common.sh
+
+DRIVER_PATH=$(dirname $0)
+source ${DRIVER_PATH}/../libfs.sh
+source ${DRIVER_PATH}/eqliscsi.conf
+source ${DRIVER_PATH}/../../scripts_eqliscsi.sh
+
+# -------- Get datastore arguments from OpenNebula core ------------
+
+DRV_ACTION=$1
+ID=$2
+
+XPATH="${DRIVER_PATH}/../xpath.rb -b $DRV_ACTION"
+
+unset i XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+
+done < <($XPATH     /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/EQL_HOST \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/EQL_POOL \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/EQL_USER \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/EQL_PASS)
+
+EQL_HOST="${XPATH_ELEMENTS[0]:-$EQL_HOST}"
+EQL_POOL="${XPATH_ELEMENTS[1]:-$EQL_POOL}"
+EQL_USER="${XPATH_ELEMENTS[2]:-$EQL_USER}"
+EQL_PASS="${XPATH_ELEMENTS[3]:-$EQL_PASS}"
+
+# ------------ Compute datastore usage -------------
+
+# Get pool size and free space on Equallogic
+log "Get size and free space on pool $EQL_POOL from $EQL_HOST"
+RETVAL=$(eqladm_free_space $EQL_POOL)
+ERROR=$?
+if [ "$ERROR" -ne 0 ]; then
+    log_error "Error getting size from pool $EQL_POOL on $EQL_HOST $RETVAL"
+    exit 1
+fi
+TOTAL_MB=`echo $RETVAL | cut -d ' ' -f2`
+FREE_MB=`echo $RETVAL | cut -d ' ' -f4`
+USED_MB=$(awk "BEGIN {print \$TOTAL_MB - \$FREE_MB}")
+
+echo -e "USED_MB=$USED_MB\n"
+echo -e "TOTAL_MB=$TOTAL_MB\n"
+echo -e "FREE_MB=$FREE_MB\n"
+exit 0

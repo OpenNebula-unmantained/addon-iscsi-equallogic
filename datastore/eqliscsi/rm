@@ -1,0 +1,77 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2014, Asociacion Clubs Baloncesto (acb.com)                      #
+# Author: Joaquin Villanueva                                                 #
+#                                                                            #
+# Portions copyright OpenNebula Project (OpenNebula.org), CG12 Labs          #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+###############################################################################
+# This script is used to remove a VM image (EQL_VOLUME) from the image repository
+###############################################################################
+
+# ------------ Set up the environment to source common tools ------------
+if [ -z "${ONE_LOCATION}" ]; then
+    LIB_LOCATION=/usr/lib/one
+else
+    LIB_LOCATION=$ONE_LOCATION/lib
+fi
+
+. $LIB_LOCATION/sh/scripts_common.sh
+
+DRIVER_PATH=$(dirname $0)
+source ${DRIVER_PATH}/../libfs.sh
+source ${DRIVER_PATH}/eqliscsi.conf
+source ${DRIVER_PATH}/../../scripts_eqliscsi.sh
+
+# -------- Get rm and datastore arguments from OpenNebula core ------------
+
+DRV_ACTION=$1
+ID=$2
+
+XPATH="${DRIVER_PATH}/../xpath.rb -b $DRV_ACTION"
+
+unset i XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <($XPATH     /DS_DRIVER_ACTION_DATA/IMAGE/SOURCE \
+                    /DS_DRIVER_ACTION_DATA/IMAGE/NAME \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/EQL_HOST \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/EQL_POOL \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/EQL_USER \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/EQL_PASS)
+
+IQN="${XPATH_ELEMENTS[0]}"
+EQL_HOST="${XPATH_ELEMENTS[2]:-$EQL_HOST}"
+EQL_POOL="${XPATH_ELEMENTS[3]:-$EQL_POOL}"
+EQL_USER="${XPATH_ELEMENTS[4]:-$EQL_USER}"
+EQL_PASS="${XPATH_ELEMENTS[5]:-$EQL_PASS}"
+
+EQL_VOLUME="$(eql_src_get_volume $IQN)"
+if [ -z "$EQL_VOLUME" ]; then
+    log_error "Error extracting Equallogic volume from $IQN"
+    exit 1
+fi
+
+# Remote volume remove on Equallogic
+log "Removing volume $EQL_VOLUME from $EQL_HOST"
+RETVAL=$(eqladm_target_delete $EQL_VOLUME)
+ERROR=$?
+if [ "$ERROR" -ne 0 ]; then
+    log_error "Error deleting volume $EQL_VOLUME on $EQL_HOST $RETVAL"
+    exit 1
+fi

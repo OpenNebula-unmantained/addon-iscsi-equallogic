@@ -1,0 +1,176 @@
+#!/bin/bash
+
+# -------------------------------------------------------------------------- #
+# Copyright 2014, Asociacion Clubs Baloncesto (acb.com)                      #
+# Author: Joaquin Villanueva                                                 #
+#                                                                            #
+# Portions copyright OpenNebula Project (OpenNebula.org), CG12 Labs          #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+###############################################################################
+# This script is used to copy a VM image (SRC) to the image repository as DST
+# Several SRC types are supported
+###############################################################################
+
+# -------- Set up the environment to source common tools & conf ------------
+
+if [ -z "${ONE_LOCATION}" ]; then
+    LIB_LOCATION=/usr/lib/one
+else
+    LIB_LOCATION=$ONE_LOCATION/lib
+fi
+
+. $LIB_LOCATION/sh/scripts_common.sh
+
+DRIVER_PATH=$(dirname $0)
+source ${DRIVER_PATH}/../libfs.sh
+source ${DRIVER_PATH}/eqliscsi.conf
+source ${DRIVER_PATH}/../../scripts_eqliscsi.sh
+
+# -------- Get cp and datastore arguments from OpenNebula core ------------
+
+DRV_ACTION=$1
+ID=$2
+
+UTILS_PATH="${DRIVER_PATH}/.."
+
+XPATH="$UTILS_PATH/xpath.rb -b $DRV_ACTION"
+
+unset i XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <($XPATH     /DS_DRIVER_ACTION_DATA/DATASTORE/BASE_PATH \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/RESTRICTED_DIRS \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/SAFE_DIRS \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/UMASK \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/EQL_HOST \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/EQL_POOL \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/EQL_USER \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/EQL_PASS \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/EQL_MULTIHOST \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/EQL_SECURITY_ACCESS \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/EQL_THINPROVISION \
+                    /DS_DRIVER_ACTION_DATA/IMAGE/NAME \
+                    /DS_DRIVER_ACTION_DATA/IMAGE/PATH \
+                    /DS_DRIVER_ACTION_DATA/IMAGE/SIZE \
+                    /DS_DRIVER_ACTION_DATA/IMAGE/TEMPLATE/DESCRIPTION \
+                    /DS_DRIVER_ACTION_DATA/IMAGE/TEMPLATE/MD5 \
+                    /DS_DRIVER_ACTION_DATA/IMAGE/TEMPLATE/SHA1 \
+		    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/NO_DECOMPRESS \
+                    /DS_DRIVER_ACTION_DATA/DATASTORE/TEMPLATE/LIMIT_TRANSFER_BW \
+                    /DS_DRIVER_ACTION_DATA/IMAGE/TEMPLATE/EQL_MULTIHOST \
+                    /DS_DRIVER_ACTION_DATA/IMAGE/TEMPLATE/EQL_SECURITY_ACCESS \
+                    /DS_DRIVER_ACTION_DATA/IMAGE/TEMPLATE/EQL_THINPROVISION)
+
+BASE_PATH="${XPATH_ELEMENTS[0]}"
+RESTRICTED_DIRS="${XPATH_ELEMENTS[1]}"
+SAFE_DIRS="${XPATH_ELEMENTS[2]}"
+UMASK="${XPATH_ELEMENTS[3]}"
+EQL_HOST="${XPATH_ELEMENTS[4]:-$EQL_HOST}"
+EQL_POOL="${XPATH_ELEMENTS[5]:-$EQL_POOL}"
+EQL_USER="${XPATH_ELEMENTS[6]:-$EQL_USER}"
+EQL_PASS="${XPATH_ELEMENTS[7]:-$EQL_PASS}"
+EQL_MULTIHOST="${XPATH_ELEMENTS[8]:-$EQL_MULTIHOST}"
+EQL_SECURITY_ACCESS="${XPATH_ELEMENTS[9]:-"$EQL_SECURITY_ACCESS"}"
+EQL_THINPROVISION="${XPATH_ELEMENTS[10]:-"$EQL_THINPROVISION"}"
+EQL_VOLUME="$(eql_clean_volume_name ${XPATH_ELEMENTS[11]})"
+SRC="${XPATH_ELEMENTS[12]}"
+SIZE="${XPATH_ELEMENTS[13]}"
+EQL_VOL_DESCRIPTION="${XPATH_ELEMENTS[14]}"
+MD5="${XPATH_ELEMENTS[15]}"
+SHA1="${XPATH_ELEMENTS[16]}"
+NO_DECOMPRESS="${XPATH_ELEMENTS[17]}"
+LIMIT_TRANSFER_BW="${XPATH_ELEMENTS[18]}"
+# Overwrite datastore defaults with image values for EQL
+EQL_MULTIHOST="${XPATH_ELEMENTS[19]:-$EQL_MULTIHOST}"
+EQL_SECURITY_ACCESS="${XPATH_ELEMENTS[20]:-"$EQL_SECURITY_ACCESS"}"
+EQL_THINPROVISION="${XPATH_ELEMENTS[21]:-"$EQL_THINPROVISION"}"
+
+set_up_datastore "$BASE_PATH" "$RESTRICTED_DIRS" "$SAFE_DIRS" "$UMASK"
+
+# Default Equallogic device created at target login (ehcmcli)
+DEV="$EQL_BASE_DEVICE/$EQL_VOLUME"
+
+DOWNLOADER_ARGS=`set_downloader_args "$MD5" "$SHA1" "$NO_DECOMPRESS" "$LIMIT_TRANSFER_BW" "$SRC" -`
+
+COPY_COMMAND="$UTILS_PATH/downloader.sh $DOWNLOADER_ARGS"
+
+case $SRC in
+http://*|https://*)
+    log "Downloading $SRC to the image repository"
+
+    DUMP="$COPY_COMMAND"
+    ;;
+
+*)
+    if [ `check_restricted $SRC` -eq 1 ]; then
+        log_error "Not allowed to copy images from $RESTRICTED_DIRS"
+        error_message "Not allowed to copy image file $SRC"
+        exit -1
+    fi
+
+    log "Copying local image $SRC to the image repository"
+
+    DUMP="$COPY_COMMAND"
+    ;;
+esac
+
+# Remote volume create on Equallogic (returns IQN)
+log "Creating volume $EQL_VOLUME on $EQL_HOST"
+IQN=$(eqladm_target_new $EQL_POOL $EQL_VOLUME $SIZE "$EQL_VOL_DESCRIPTION")
+ERROR=$?
+if [ "$ERROR" -ne 0 ]; then
+    log_error "Error creating volume $EQL_VOLUME on $EQL_HOST $IQN"
+    exit 1
+fi
+
+# Discover iscsi target
+log "Discover targets from $EQL_HOST"
+eql_exec_and_log "$SUDO $(eqliscsi_discovery)" \
+    "Error discovering targets from host $EQL_HOST" \
+    "exit"
+
+# Connect to iscsi target and login using Equallogic ehcmcli
+log "Connecting to $EQL_HOST:$IQN"
+eql_exec_and_log "$SUDO $(eqliscsi_login $IQN)" \
+    "Error connecting to $EQL_HOST:$IQN" \
+    "exit"
+
+# Wait connection
+sleep $EQL_WAIT_TIME
+
+# Copy image on device
+log "Copying image to $DEV ($EQL_HOST:$IQN)"
+eql_exec_and_log "eval $DUMP | $SUDO $DD of=$DEV bs=2M" \
+    "Error dumping $SRC to $DEV ($IQN)"
+ERROR=$?
+# If copy ends with error, execute disconnect target
+
+# Disconnect target
+log "Disconnecting from $EQL_HOST:$IQN"
+eql_exec_and_log "$SUDO $(eqliscsi_logout $IQN)" \
+    "Error disconnecting from $EQL_HOST:$IQN"
+ERROR2=$?
+
+# If copy or disconnect ends with error, exits
+if [ "$ERROR" -ne 0 ] || [ "$ERROR2" -ne 0 ]; then
+    exit 1
+fi
+
+# Return HOST+IQN
+DST="$EQL_HOST:$IQN"
+
+echo "$DST"
