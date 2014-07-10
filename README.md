@@ -16,7 +16,8 @@ This add-on is compatible with OpenNebula 4.4+
 ### OpenNebula Front-end
 
 - python-paramiko
-- eqlscript-1.0
+- eqlscript-1.0 from Equallogic Host Integration Tools for Linux (http://support.equallogic.com)
+- open-iscsi initiator
 
 ### OpenNebula Hosts
 
@@ -56,11 +57,40 @@ Then, the scripts call the TM premigrate/postmigrate script for every disk attac
 
 The eqliscsi driver needs to call the tm/eqlscsi/premigrate script to locate and login to the correct IQN from the SAN. The premigrate script does a iscsi discovery and login at the host before the VM migration can start. At this point, the SAN volume needs to accept a multiple login (this is the reason for the EQL_MULTIHOST="enable" parameter in eqliscsi.conf) to make the iscsi device available for the hosts involved for the VM migration.
 
+- Configure /etc/iscsi/iscsid.conf. Suggested settings for iscsid.conf:
+
+`node.startup = manual
+node.session.auth.authmethod = CHAP
+node.session.auth.username = username
+node.session.auth.password = password
+discovery.sendtargets.auth.authmethod = CHAP
+discovery.sendtargets.auth.username = username
+discovery.sendtargets.auth.password = password
+node.session.cmds_max = 1024
+node.session.queue_depth = 128
+node.session.iscsi.FastAbort = No`
+
+Node startup method must be "manual" to prevent automatic login to discovered targets. Login/logout is managed from the eqliscsi drivers.
+Set authenticatiod method and credentials to match de Equallogic pool settings.
+cmds_max, queue_depth and FastAbort are suggested values for correct volume operation with Equallogic SAN
+
+- Configure iscsi interface. The eqliscsi driver uses the same iscsi interface for all volume operations. Create one at each host using iscsiadm and set the value of EQL_IFACE in eqlscsi.conf:
+
+`iscsiadm -m iface -I <eql_iface_name> -o new`
+`iscsiadm -m iface -I <eql_iface_name> -o update -n iface.net_ifacename -v <network iscsi iface: eth0, eth1...> -n iface.mtu -v 9000`
+
+- Test target discovery and login
+
+
 ### Hosts
 
 Copy these directories: 
 
 - `udev/rules.d/*` -> `/etc/udev/rules.d/`
+
+Configure /etc/iscsi/iscsid.conf (same as front-end config)
+
+Add oneadmin user to disk group (needed to avoid permission problems with qemu)
 
 
 ## Configuration
