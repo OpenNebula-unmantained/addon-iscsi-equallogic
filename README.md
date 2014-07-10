@@ -66,15 +66,16 @@ This add-on is compatible with OpenNebula 4.4+
     node.session.iscsi.FastAbort = No
     ```
 
-    Node startup method must be "manual" to prevent automatic login to discovered targets. Login/logout is managed from the eqliscsi drivers.
-Set authenticatiod method and credentials to match de Equallogic pool settings.
-cmds_max, queue_depth and FastAbort are suggested values for correct volume operation with Equallogic SAN
+    Node startup method must be "manual" to prevent automatic login to discovered targets. Login/logout is managed from the eqliscsi drivers.  
+Set authenticatiod method and credentials to match de Equallogic pool settings.  
+cmds_max, queue_depth and FastAbort are suggested values for correct volume operation with Equallogic SAN.  
 
 - Configure iscsi interface. The eqliscsi driver uses the same iscsi interface for all volume operations. Create one at each host using iscsiadm and set the value of EQL_IFACE in eqlscsi.conf:
 
-    ```iscsiadm -m iface -I <eql_iface_name> -o new  
-iscsiadm -m iface -I <eql_iface_name> -o update -n iface.net_ifacename -v <network iscsi iface: eth0, eth1...> -n iface.mtu -v 9000
-```
+    ```
+    iscsiadm -m iface -I <eql_iface_name> -o new  
+    iscsiadm -m iface -I <eql_iface_name> -o update -n iface.net_ifacename -v <network iscsi iface: eth0, eth1...> -n iface.mtu -v 9000
+    ```
 
 - Test target discovery and login
 
