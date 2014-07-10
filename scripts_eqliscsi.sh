@@ -29,7 +29,7 @@ TR=tr
 #   EQL_PASS - Equallogic PASSWORD
 #   EQL_MULTIHOST - Enable multihost access for volume. If empty, defaults to enabled.
 #   EQL_SECURITY_ACCESS - Security settings for volume. See Equallogic CLI docs for options. If empty, defaults to unrestricted.
-#   EQL_BASE_DEVICE - Base path used by Equallogic HIT tools to mount targets
+#   EQL_BASE_DEVICE - Base path used by host to mount targets
 #
 #   Default values set at remotes/datastore/eqliscsi/eqliscsi.conf file
 #
@@ -233,24 +233,25 @@ function eqladm_set_access {
 	return 1
     fi
     # Set access rules
-    CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS volume select $EQL_VOLUME access create $EQL_SECURITY_ACCESS"
-    RETVAL=$($SUDO $CMD)
-    if [[ "$RETVAL" == *"% Error"* ]]; then
-	log_error "Error setting access rules to $EQL_VOLUME volume on $EQL_HOST $RETVAL"
-	return 1
+    if [ ! -z "$EQL_SECURITY_ACCESS" ]; then
+	CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS volume select $EQL_VOLUME access create $EQL_SECURITY_ACCESS"
+        RETVAL=$($SUDO $CMD)
+	if [[ "$RETVAL" == *"% Error"* ]]; then
+	    log_error "Error setting access rules to $EQL_VOLUME volume on $EQL_HOST $RETVAL"
+	    return 1
+        fi
     fi
     return 0
 }
 
 
 # ------------------------------------------------------------------------------
-# iSCSI functions executed on client hosts using iscsiadm and ehcmcli.
+# iSCSI functions executed on client hosts using iscsiadm.
 #       Construct and echo commands, not executed.
 # ------------------------------------------------------------------------------
 
 # Discover targets
 function eqliscsi_discovery {
-    #echo "$ISCSIADM -m discovery -t st -p $EQL_HOST"
     echo "$ISCSIADM -m discoverydb -t st -p $EQL_HOST -I $EQL_IFACE -o new -o delete --discover"
 }
 
@@ -271,7 +272,7 @@ function eqliscsi_logout {
 
 
 # ------------------------------------------------------------------------------
-# iSCSI information functions executed on client hosts using iscsiadm and ehcmcli.
+# iSCSI information functions executed on client hosts using iscsiadm.
 #       Returns IQN values or commands to retrieve values.
 # ------------------------------------------------------------------------------
 

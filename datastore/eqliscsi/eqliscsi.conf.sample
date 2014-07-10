@@ -17,20 +17,20 @@
 # limitations under the License.                                             #
 #--------------------------------------------------------------------------- #
 
-# Default Equalogic iSCSI group host
+#### Default values for volumes on Equalogic SAN 
 EQL_HOST="192.168.0.1"
 EQL_POOL="sample_pool"
 EQL_USER="sample_user"
 EQL_PASS="sample_pass"
 
 #EQL_MULTIHOST="<enable|disable>"
-#EQL_SECURITY_ACCESS="apply-to <volume|snapshot|both> authmethod <chap|none> username <user_name> ipaddress <ip_address> initiator <initiator_name>"
-
 EQL_MULTIHOST="enable"
+#EQL_SECURITY_ACCESS="apply-to <volume|snapshot|both> authmethod <chap|none> username <user_name> ipaddress <ip_address> initiator <initiator_name>"
 EQL_SECURITY_ACCESS="ipaddress 192.168.*.*"
-
 EQL_THINPROVISION="thin-provision thin-min-reserve 50%"
 
+
+#### Config values for ONE eqliscsi driver
 #EQL_BASE_DEVICE="/dev/eql"
 EQL_BASE_DEVICE="/dev/iscsi"
 
@@ -46,4 +46,3 @@ NO_ISCSI=""
 
 # Utilities
 EQLADM=EqlCliExec.py
-EQLEHCM=ehcmcli

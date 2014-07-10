@@ -112,7 +112,7 @@ if [ "$FSTYPE" != "save_as" ] && [ "$FSTYPE" != "raw" ]; then
 	"Error discovering targets from $EQL_HOST" \
 	"exit"
 
-    # Connect to iscsi target and login using Equallogic ehcmcli
+    # Connect to iscsi target and login
     log "Connecting to $EQL_HOST:$IQN"
     eql_exec_and_log "$SUDO $(eqliscsi_login $IQN)" \
 	"Error connecting to $EQL_HOST:$IQN" \

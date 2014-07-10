@@ -69,7 +69,7 @@ This add-on is compatible with OpenNebula 4.4+
     node.session.iscsi.FastAbort = No
     ```
 
-    Node startup method must be "manual" to prevent automatic login to discovered targets. Login/logout is managed from the eqliscsi drivers.  
+    Node startup method must be "manual" to prevent automatic login to discovered targets. Login / logout is managed from the eqliscsi drivers.  
 Set authentication method and credentials to match Equallogic pool settings.  
 cmds_max, queue_depth and FastAbort are suggested values for correct volume operation with Equallogic SAN.  
 
@@ -95,3 +95,34 @@ cmds_max, queue_depth and FastAbort are suggested values for correct volume oper
 
 ## Configuration
 
+### eqlscsi.conf
+
+#### Volume settings
+
+These settings are default values used for volume creation and access. All of them can be overrided at datastore level or image level, setting the new values as attributes.
+  
+The eqliscsi driver use the next precedence for overriding values:  
+
+`eqlscsi.conf values -> datastore attrs -> image attrs`
+
+- `EQL_HOST`: Management IP of Equallogic SAN 
+- `EQL_POOL`: Default volume pool
+- `EQL_USER`: Default management user
+- `EQL_PASS`: Default management user password
+
+- `EQL_MULTIHOST`: "`enable|disable`"  
+  Volume can be logged in from multiple hosts or not. Default value if not set = "enable". If disabled, live migration ends with error as the migration host receiver can't mount the volume. Value set for new volumes.
+- `EQL_SECURITY_ACCESS`: "`apply-to <volume|snapshot|both> authmethod <chap|none> username <user_name> ipaddress <ip_address> initiator <initiator_name>`"  
+  Security values applied for new volumes. Can be used to apply network/initiator/user restrictions for login, e.g. "`ipaddress 192.168.100.*`"
+
+- `EQL_THINPROVISION`: Sets the thin provisioning values for the volume, if desired.  
+  e.g. "`thin-provision thin-min-reserve 50%`"
+
+For more info about the `EQL_SECURITY_ACCESS` and `EQL_THINPROVISION`, see http://psonlinehelp.equallogic.com/V3.3/volume_create.htm
+
+#### eqliscsi settings
+
+- `EQL_BASE_DEVICE="/dev/iscsi"` : path were udev iscsi rules and script link the volume after iscsiadm log-in at hosts
+- `EQL_IFACE="eql00"` : Default iscsi network interface used for discovery and connections
+- `EQL_WAIT_TIME=1` : Seconds to wait after login/logout operations
+- `EQLADM=EqlCliExec.py` : Equallogic CLI utility path/name
