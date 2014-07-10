@@ -41,7 +41,8 @@ This add-on is compatible with OpenNebula 4.4+
     - `datastore/eqliscsi/eqlscsi.conf.sample` -> `/var/lib/one/remotes/datastore/eqliscsi/eqlscsi.conf`
     - `tm/eqliscsi` -> `/var/lib/one/remotes/tm/eqliscsi`  
     
-    > **WARNING**: Check the tm/shared/premigrate and postmigrate scripts before replace them with the eqliscsi supplied ones. If you have customized these scripts, the functions they perform are lost so they must be incorporated to the eqliscsi supplied scripts.
+    > **WARNING**: Check the tm/shared/premigrate and postmigrate scripts before replace them with the eqliscsi supplied ones. If you have customized these scripts, the functions they perform are lost so they must be incorporated to the eqliscsi supplied scripts.  
+    
     - `tm/shared/premigrate.eqliscsi` -> `/var/lib/one/remotes/tm/shared/premigrate`
     - `tm/shared/postmigrate.eqliscsi` -> `/var/lib/one/remotes/tm/shared/postmigrate`
 
