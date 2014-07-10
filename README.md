@@ -70,7 +70,7 @@ This add-on is compatible with OpenNebula 4.4+
     ```
 
     Node startup method must be "manual" to prevent automatic login to discovered targets. Login/logout is managed from the eqliscsi drivers.  
-Set authenticatiod method and credentials to match de Equallogic pool settings.  
+Set authentication method and credentials to match Equallogic pool settings.  
 cmds_max, queue_depth and FastAbort are suggested values for correct volume operation with Equallogic SAN.  
 
 - Configure iscsi interface. The eqliscsi driver uses the same iscsi interface for all volume operations. Create one at each host using iscsiadm and set the value of EQL_IFACE in eqlscsi.conf:
