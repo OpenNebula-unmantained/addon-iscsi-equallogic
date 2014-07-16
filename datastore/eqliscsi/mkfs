@@ -121,21 +121,37 @@ if [ "$FSTYPE" != "save_as" ] && [ "$FSTYPE" != "raw" ]; then
     # Wait connection
     sleep $EQL_WAIT_TIME
 
-    # Create filesystem on device
-    log "Creating filesystem $FSTYPE on $DEV"
-    eql_exec_and_log "$SUDO $(mkfs_command "$DEV" "$FSTYPE")" \
-	"Error creating filesystem $FSTYPE on $DEV"
+    # Create partition on device
+    log "Creating partition on $DEV"
+    eql_exec_and_log "$SUDO parted -s $DEV mktable gpt" \
+	"Error creating partition label on $DEV"
     ERROR=$?
+
+    if [ "$ERROR" -eq 0 ]; then
+	eql_exec_and_log "$SUDO parted -s $DEV mkpart primary 0% 100%" \
+	    "Error creating partition on $DEV"
+	ERROR=$?
+        if [ "$ERROR" -eq 0 ]; then
+	    # Create filesystem on device
+	    log "Creating filesystem $FSTYPE on $DEV"
+	    PARTITION="${DEV}p1"
+	    # Wait partition appearance after udev processing
+	    sleep 5
+	    eql_exec_and_log "$SUDO $(mkfs_command "$PARTITION" "$FSTYPE")" \
+		"Error creating filesystem $FSTYPE on $PARTITION"
+	    ERROR=$?
+	fi
+    fi
     # Let continue to disconnect target ever if ended in error
 
     # Disconnect target
     log "Disconnecting from $EQL_HOST:$IQN"
     eql_exec_and_log "$SUDO $(eqliscsi_logout $IQN)" \
 	"Error disconnecting from $EQL_HOST:$IQN"
-    ERROR2=$?
+    ERROR=$?
 
     # Exits if crete filesystem or disconnect ends with error
-    if [ "$ERROR" -ne 0 ] || [ "$ERROR2" -ne 0 ]; then
+    if [ "$ERROR" -ne 0 ]; then
 	exit 1
     fi
 fi
