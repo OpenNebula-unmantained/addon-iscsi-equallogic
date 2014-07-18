@@ -45,6 +45,8 @@ TM_PATH=$(dirname $0)
 source ${TM_PATH}/../../datastore/eqliscsi/eqliscsi.conf
 source ${TM_PATH}/../../scripts_eqliscsi.sh
 
+SRC_PATH=`arg_path $SRC`
+
 #-------------------------------------------------------------------------------
 # Get EQL vars from datastore/image
 #-------------------------------------------------------------------------------
@@ -53,7 +55,7 @@ XPATH="${TM_PATH}/../../datastore/xpath.rb --stdin"
 unset i XPATH_ELEMENTS
 
 # Get datastore/image data from VM disk
-DISK_ID=$(echo "$DST_PATH" | $AWK -F. '{print $NF}')
+DISK_ID=$(echo "$SRC_PATH" | $AWK -F. '{print $NF}')
 
 while IFS= read -r -d '' element; do
     XPATH_ELEMENTS[i++]="$element"
