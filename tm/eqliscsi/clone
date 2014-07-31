@@ -19,7 +19,7 @@
 # limitations under the License.                                             #
 #--------------------------------------------------------------------------- #
 
-# clone fe:SOURCE host:remote_system_ds/disk.i size vmid dsid
+# clone fe:SOURCE host:remote_system_ds/disk.i vm_id ds_id
 #   - fe is the front-end hostname
 #   - SOURCE is the path of the disk image in the form DS_BASE_PATH/disk
 #   - host is the target host to deploy the VM
@@ -41,22 +41,22 @@ fi
 
  . $TMCOMMON
 
+EQL_MAD_DEBUG=1
 TM_PATH=$(dirname $0)
 source ${TM_PATH}/../../datastore/eqliscsi/eqliscsi.conf
 source ${TM_PATH}/../../scripts_eqliscsi.sh
 
-SRC_PATH=`arg_path $SRC`
 
 #-------------------------------------------------------------------------------
 # Get EQL vars from datastore/image
 #-------------------------------------------------------------------------------
+# Get disk id from DST path
+DST_PATH=`arg_path $DST`
+DISK_ID=$(echo "$DST_PATH" | $AWK -F. '{print $NF}')
+
 XPATH="${TM_PATH}/../../datastore/xpath.rb --stdin"
 
 unset i XPATH_ELEMENTS
-
-# Get datastore/image data from VM disk
-DISK_ID=$(echo "$SRC_PATH" | $AWK -F. '{print $NF}')
-
 while IFS= read -r -d '' element; do
     XPATH_ELEMENTS[i++]="$element"
 done < <(onevm show -x $VMID| $XPATH \
@@ -66,9 +66,8 @@ done < <(onevm show -x $VMID| $XPATH \
 SRC_DSID="${XPATH_ELEMENTS[0]}"
 SRC_IMID="${XPATH_ELEMENTS[1]}"
 
-unset i XPATH_ELEMENTS
-
 # Get EQL vars from datastore SRC_DSID
+unset i XPATH_ELEMENTS
 while IFS= read -r -d '' element; do
     XPATH_ELEMENTS[i++]="$element"
 done < <(onedatastore show -x $SRC_DSID| $XPATH \
@@ -97,17 +96,16 @@ EQL_MULTIHOST="${XPATH_ELEMENTS[6]:-$EQL_MULTIHOST}"
 EQL_SECURITY_ACCESS="${XPATH_ELEMENTS[7]:-"$EQL_SECURITY_ACCESS"}"
 
 #-------------------------------------------------------------------------------
-# Set src iqn device dst path and dir
+# Set src volume device dst path and dir
 #-------------------------------------------------------------------------------
 
-SRC_IQN="$(eql_src_get_iqn $SRC)"
-SRC_VOLUME="$(eql_src_get_volume $SRC)"
+SRC_VOLUME=$(eql_src_get_volume $SRC)
 
 DST_PATH=`arg_path $DST`
 DST_HOST=`arg_host $DST`
 DST_DIR=`dirname $DST_PATH`
 
-DST_VOLUME=$SRC_VOLUME-$VMID
+DST_VOLUME="${SRC_VOLUME}-${VMID}"
 DST_DEV="$EQL_BASE_DEVICE/$DST_VOLUME"
 
 #-------------------------------------------------------------------------------
@@ -115,14 +113,14 @@ DST_DEV="$EQL_BASE_DEVICE/$DST_VOLUME"
 #-------------------------------------------------------------------------------
 
 # Remote volume cloning on Equallogic (returns IQN)
-log "Cloning volume $SRC_VOLUME on $EQL_HOST to $DST_VOLUME"
+eql_log "Cloning volume $SRC_VOLUME on $EQL_HOST to $DST_VOLUME"
 DST_IQN=$(eqladm_target_clone $SRC_VOLUME $DST_VOLUME "Clone $VMID of $SRC_VOLUME")
-ERROR=$?
-if [ "$ERROR" -ne 0 ]; then
-    log_error "Error cloning from volume $SRC_VOLUME to $DST_VOLUME on $EQL_HOST $SRC_IQN"
+RC=$?
+if [ "$RC" -ne 0 ]; then
+    eql_error_message "Error cloning from volume $SRC_VOLUME to $DST_VOLUME on $EQL_HOST"
     exit 1
 fi
-log "Cloned image $SRC_VOLUME to $DST_VOLUME"
+eql_log "Cloned image $SRC_VOLUME to $DST_VOLUME"
 
 #-------------------------------------------------------------------------------
 # Discover target, login and link volume to device
@@ -134,20 +132,26 @@ DISCOVER_CMD=$(cat <<EOF
     mkdir -p $DST_DIR
     $SUDO $(eqliscsi_discovery)
     $SUDO $(eqliscsi_login "$DST_IQN")
-    ERROR=\$?
-    if [ "\$ERROR" -ne 0 ]; then
-	exit \$ERROR
+    RC=\$?
+    if [ "\$RC" -ne 0 ]; then
+	exit \$RC
     fi
-    # poll
-    while [ ! -L "$DST_DEV" ]; do
-	sleep 1
+    # poll 10 secs for iSCSI device
+    x=0
+    while [ "\$x" -lt 10 -a ! -L "$DST_DEV" ]; do
+        x=\$((x+1))
+        sleep 1
     done
-    ln -sf "$DST_DEV" "$DST_PATH"
+    if [ -L "$DST_DEV" ]; then
+        ln -sf "$DST_DEV" "$DST_PATH"
+    else
+        echo "iSCSI device "$DST_DEV" not found on time"
+        exit 1
+    fi
 EOF
 )
 
-eql_ssh_exec_and_log "$DST_HOST" "$DISCOVER_CMD" \
-        "Error logging in $DST_IQN at $DST_HOST or linking $DST_DEV to $DST_PATH" \
-	"exit"
+ssh_exec_and_log "$DST_HOST" "$DISCOVER_CMD" "Error logging in $DST_IQN at $DST_HOST or linking $DST_DEV to $DST_PATH"
+eql_log "Logged in $DST_VOLUME at $DST_HOST"
 
 exit 0

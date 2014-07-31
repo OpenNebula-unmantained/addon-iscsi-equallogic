@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 # -------------------------------------------------------------------------- #
 # Copyright 2014, Asociacion Clubs Baloncesto (acb.com)                      #
@@ -18,13 +18,16 @@
 # See the License for the specific language governing permissions and        #
 # limitations under the License.                                             #
 #--------------------------------------------------------------------------- #
-# POSTMIGRATE SOURCE DST remote_system_dir vmid dsid template
+# POSTMIGRATE SOURCE DST template vmid dsid remote_system_dir disk_id src_dsid persistent
 #  - SOURCE is the host where the VM is running
 #  - DST is the host where the VM is to be migrated
-#  - remote_system_dir is the path for the VM home in the system datastore
+#  - template is the template of the VM in XML and base64 encoded
 #  - vmid is the id of the VM
 #  - dsid is the target datastore
-#  - template is the template of the VM in XML and base64 encoded
+#  - remote_system_dir is the path for the VM home in the system datastore
+#  - disk_id is the DISK ID from the VM
+#  - src_dsid is the DATASTORE ID of the VM disk
+#  - persistent YES if disk image is persistent. Empty otherwise
 
 # To access the vm_template you can use the xpath.rb utility. Check the
 # datastore drivers for an example.
@@ -39,7 +42,7 @@ fi
 
 . $TMCOMMON
 
-
+EQL_MAD_DEBUG=1
 TM_PATH=$(dirname $0)
 source ${TM_PATH}/../../datastore/eqliscsi/eqliscsi.conf
 source ${TM_PATH}/../../scripts_eqliscsi.sh
@@ -48,45 +51,53 @@ source ${TM_PATH}/../../scripts_eqliscsi.sh
 
 SRC_HOST=$1
 DST_HOST=$2
-VM_PATH=$3
+TEMPLATE=$3
 
 VMID=$4
 DSID=$5
 
-TEMPLATE=$6
-
-PERSISTENT=$7
+VM_PATH=$6
+DISK_ID=$7
+SRC_DSID=$8
+PERSISTENT=$9
 
 #-------------------------------------------------------------------------------
-# Retrieve volume and IQN from iscsi discovery database if not persistent
-# Equallogic generates IQN with random numbers when cloning source image (not stored in VM template)
-# If persistent, get them from VM template
+# Get EQL_HOST from datastore SRC_DSID
 #-------------------------------------------------------------------------------
-EQL_HOST="$(eql_src_get_host $VM_PATH)"
+XPATH="${TM_PATH}/../../datastore/xpath.rb --stdin"
+
+unset i XPATH_ELEMENTS
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(onedatastore show -x $SRC_DSID| $XPATH \
+                    /DATASTORE/TEMPLATE/EQL_HOST)
+
+EQL_HOST="${XPATH_ELEMENTS[0]:-$EQL_HOST}"
+
+#-------------------------------------------------------------------------------
+# Retrieve volume name and device
+#-------------------------------------------------------------------------------
 EQL_VOLUME="$(eql_src_get_volume $VM_PATH)"
-
+# If not persistent, complete volume name
 if [ -z "$PERSISTENT" ]; then
     EQL_VOLUME=$EQL_VOLUME-$VMID
-    IQN="$(eqliscsi_get_iqn_client $EQL_VOLUME)"
-else
-    IQN="$(eql_src_get_iqn $VM_PATH)"
 fi
+EQL_DEV="$EQL_BASE_DEVICE/$EQL_VOLUME"
 
 # Construct command to discover target and login
-log "Logging out of $IQN in $SRC_HOST"
+eql_log "Logging out $EQL_VOLUME at $DST_HOST"
 
-DISCOVER_CMD=$(cat <<EOF
+LOGOUT_CMD=$(cat <<EOF
     set -e
-    $SUDO $(eqliscsi_logout "$IQN")
-    ERROR=\$?
-    if [ "\$ERROR" -ne 0 ]; then
-        exit \$ERROR
+    IQN=\$($SUDO $(eqliscsi_get_iqn_from_node "$EQL_VOLUME"))
+    $SUDO $(eqliscsi_logout "\$IQN")
+    RC=\$?
+    if [ "\$RC" -ne 0 ]; then
+        exit \$RC
     fi
 EOF
 )
 
-eql_ssh_exec_and_log "$SRC_HOST" "$DISCOVER_CMD" \
-        "Error logging out $SRC_HOST:$IQN" \
-        "exit"
-
+eql_log "$DST_HOST" "$LOGOUT_CMD"
+ssh_exec_and_log "$DST_HOST" "$LOGOUT_CMD" "Log out error at $DST_HOST:$IQN"
 exit 0

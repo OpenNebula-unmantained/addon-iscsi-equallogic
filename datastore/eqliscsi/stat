@@ -54,7 +54,7 @@ SRC="${XPATH_ELEMENTS[0]}"
 SIZE=`fs_size $SRC`
 
 if [ "$SIZE" = "0" ]; then
-    log_error "Cannot determine size for $SRC"
+    error_message "Cannot determine size for $SRC"
     exit -1
 fi
 

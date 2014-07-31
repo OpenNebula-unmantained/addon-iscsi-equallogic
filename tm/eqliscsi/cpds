@@ -19,7 +19,7 @@
 # limitations under the License.                                             #
 #--------------------------------------------------------------------------- #
 
-# cpds host:remote_system_ds/disk.i fe:SOURCE
+# cpds host:remote_system_ds/disk.i fe:SOURCE vmid dsid
 #   - fe is the front-end hostname
 #   - SOURCE is the path of the disk image in the form DS_BASE_PATH/disk
 #   - host is the target host to deploy the VM
@@ -41,55 +41,102 @@ fi
 
 . $TMCOMMON
 
+EQL_MAD_DEBUG=1
 TM_PATH=$(dirname $0)
 source ${TM_PATH}/../../datastore/eqliscsi/eqliscsi.conf
 source ${TM_PATH}/../../scripts_eqliscsi.sh
 
-SRC_HOST=`arg_host $SRC`
-EQL_NEW_VOLUME="$DST"
-
-DISK_ID=$(echo $SRC|awk -F. '{print $NF}')
 
 #-------------------------------------------------------------------------------
 # Get image information
 #-------------------------------------------------------------------------------
+# Get disk id from SRC path
+SRC_PATH=`arg_path $SRC`
+DISK_ID=$(echo "$SRC_PATH" | $AWK -F. '{print $NF}')
 
+# Get datastore/image data from VM disk
 XPATH="${TM_PATH}/../../datastore/xpath.rb --stdin"
 
 unset i XPATH_ELEMENTS
-
 while IFS= read -r -d '' element; do
     XPATH_ELEMENTS[i++]="$element"
 done < <(onevm show -x $VMID| $XPATH \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/DATASTORE_ID \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/IMAGE_ID \
                     /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/SOURCE \
                     /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/SAVE_AS \
                     /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/PERSISTENT)
 
-SRC="${XPATH_ELEMENTS[0]}"
-SAVE_AS="${XPATH_ELEMENTS[1]}"
-PERSISTENT="${XPATH_ELEMENTS[2]}"
+SRC_DSID="${XPATH_ELEMENTS[0]}"
+SRC_IMID="${XPATH_ELEMENTS[1]}"
+EQL_VOLUME="$(eql_src_get_volume ${XPATH_ELEMENTS[2]})"
+SAVE_AS="${XPATH_ELEMENTS[3]}"
+PERSISTENT="${XPATH_ELEMENTS[4]}"
 
+# Adjust source volume name if not persistent
 if [ -z "$PERSISTENT" ]; then
-    SRC=$SRC-$VMID
+    EQL_VOLUME="${EQL_VOLUME}-${VMID}"
 fi
 
-EQL_HOST="$(eql_src_get_host $SRC)"
-IQN="$(eql_src_get_iqn $SRC)"
-EQL_VOLUME="$(eql_src_get_volume $SRC)"
-EQL_DEV="$EQL_BASE_DEVICE/$EQL_VOLUME"
+# Get EQL vars from datastore SRC_DSID
+unset i XPATH_ELEMENTS
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(onedatastore show -x $SRC_DSID| $XPATH \
+                    /DATASTORE/TEMPLATE/EQL_HOST \
+                    /DATASTORE/TEMPLATE/EQL_POOL \
+                    /DATASTORE/TEMPLATE/EQL_USER \
+                    /DATASTORE/TEMPLATE/EQL_PASS \
+                    /DATASTORE/TEMPLATE/EQL_MULTIHOST \
+                    /DATASTORE/TEMPLATE/EQL_SECURITY_ACCESS)
+
+# Get EQL vars from image SRC_IMID
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <(oneimage show -x $SRC_IMID| $XPATH \
+                    /IMAGE/TEMPLATE/EQL_MULTIHOST \
+                    /IMAGE/TEMPLATE/EQL_SECURITY_ACCESS)
+
+EQL_HOST="${XPATH_ELEMENTS[0]:-$EQL_HOST}"
+EQL_POOL="${XPATH_ELEMENTS[1]:-$EQL_POOL}"
+EQL_USER="${XPATH_ELEMENTS[2]:-$EQL_USER}"
+EQL_PASS="${XPATH_ELEMENTS[3]:-$EQL_PASS}"
+EQL_MULTIHOST="${XPATH_ELEMENTS[4]:-$EQL_MULTIHOST}"
+EQL_SECURITY_ACCESS="${XPATH_ELEMENTS[5]:-"$EQL_SECURITY_ACCESS"}"
+# Overwrite datastore defaults with image values for EQL
+EQL_MULTIHOST="${XPATH_ELEMENTS[6]:-$EQL_MULTIHOST}"
+EQL_SECURITY_ACCESS="${XPATH_ELEMENTS[7]:-"$EQL_SECURITY_ACCESS"}"
+
+# Get destination volume name
+EQL_NEW_VOLUME=`arg_path $DST`
 
 #-------------------------------------------------------------------------------
 # Clone volume and set config
 #-------------------------------------------------------------------------------
 
 # Remote volume cloning on Equallogic (returns IQN)
-log "Cloning volume $EQL_VOLUME on $EQL_HOST to $EQL_NEW_VOLUME"
+eql_log "Cloning volume $EQL_VOLUME on $EQL_HOST to $EQL_NEW_VOLUME"
 IQN=$(eqladm_target_clone $EQL_VOLUME $EQL_NEW_VOLUME "$EQL_VOL_DESCRIPTION")
-ERROR=$?
-if [ "$ERROR" -ne 0 ]; then
-    log_error "Error cloning from volume $EQL_VOLUME to $EQL_NEW_VOLUME on $EQL_HOST $IQN"
+RC=$?
+if [ "$RC" -ne 0 ]; then
+    error_message "Error cloning from volume $EQL_VOLUME to $EQL_NEW_VOLUME on $EQL_HOST $IQN"
     exit 1
 fi
-log "Cloned image $IQN to $EQL_NEW_VOLUME"
+eql_log "Cloned image $IQN to $EQL_NEW_VOLUME"
+
+#-------------------------------------------------------------------------------
+# Remove source volume in the Equallogic
+#-------------------------------------------------------------------------------
+exit 0
+if [ -z "$PERSISTENT" ]; then
+    # Remote volume remove on Equallogic
+    eql_log "Removing volume $IQN from $EQL_HOST"
+    RETVAL=$(eqladm_target_delete $EQL_VOLUME)
+    RC=$?
+    if [ "$RC" -ne 0 ]; then
+	error_message "Error deleting volume $EQL_VOLUME on $EQL_HOST $RETVAL"
+	exit 1
+    fi
+fi
 
 exit 0

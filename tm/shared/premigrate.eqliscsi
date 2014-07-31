@@ -58,24 +58,26 @@ TEMPLATE=$6
 XPATH="${TM_PATH}/../../datastore/xpath_multi.rb -b $TEMPLATE"
 
 unset i XPATH_ELEMENTS
-
 while IFS= read -r -d '' element; do
     XPATH_ELEMENTS[i++]="$element"
 done < <($XPATH     /VM/TEMPLATE/DISK/TM_MAD \
                     /VM/TEMPLATE/DISK/SOURCE \
+                    /VM/TEMPLATE/DISK/DISK_ID \
+                    /VM/TEMPLATE/DISK/DATASTORE_ID \
 		    /VM/TEMPLATE/DISK/PERSISTENT)
 
 TM_MAD_ARRAY=( $(string_to_array ${XPATH_ELEMENTS[0]}) )
 DISK_SOURCE_ARRAY=( $(string_to_array ${XPATH_ELEMENTS[1]}) )
-DISK_PERSISTENT_ARRAY=( $(string_to_array ${XPATH_ELEMENTS[2]}) )
+DISK_ID_ARRAY=( $(string_to_array ${XPATH_ELEMENTS[2]}) )
+DISK_DS_ARRAY=( $(string_to_array ${XPATH_ELEMENTS[3]}) )
+DISK_PERSISTENT_ARRAY=( $(string_to_array ${XPATH_ELEMENTS[4]}) )
 
 for i in "${!TM_MAD_ARRAY[@]}"
 do
-    TM_MAD_CALL="${TM_PATH}/../${TM_MAD_ARRAY[i]}/premigrate $SRC_HOST $DST_HOST ${DISK_SOURCE_ARRAY[i]} $VMID $DSID $TEMPLATE ${DISK_PERSISTENT_ARRAY[i]}"
+    TM_MAD_CALL="${TM_PATH}/../${TM_MAD_ARRAY[i]}/premigrate $SRC_HOST $DST_HOST $TEMPLATE $VMID $DSID ${DISK_SOURCE_ARRAY[i]} ${DISK_ID_ARRAY[i]} ${DISK_DS_ARRAY[i]} ${DISK_PERSISTENT_ARRAY[i]}"
     CURR_PATH=$(pwd)
     cd "${TM_PATH}/../${TM_MAD_ARRAY[i]}"
     bash $TM_MAD_CALL
     cd $CURR_PATH
 done
-
 exit 0

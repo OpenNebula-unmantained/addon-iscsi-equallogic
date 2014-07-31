@@ -15,8 +15,31 @@
 # limitations under the License.                                             #
 #--------------------------------------------------------------------------- #
 
-# Path for utilities
-TR=tr
+# ------------------------------------------------------------------------------
+# Debug functions
+# ------------------------------------------------------------------------------
+
+# Debug calls if ONE_MAD_DEBUG and EQL_MAD_DEBUG enabled (set on every script to log)
+function eql_log_debug {
+    if [ $ONE_MAD_DEBUG -eq 1 ] && [ $EQL_MAD_DEBUG -eq 1 ]; then
+	local EQL_LOG_FILE="/var/log/one/one_eqliscsi.log"
+	local SCRIPT_NAME=$(basename $0)
+	local TIMESTAMP=$(date +"[%F %T]")
+	local DEBUG_MSG="$*"
+	echo ${TIMESTAMP} ${SCRIPT_NAME}: "${DEBUG_MSG}" >> ${EQL_LOG_FILE}
+    fi
+}
+
+function eql_log {
+    eql_log_debug "[I]" "$*"
+    log "$*"
+}
+
+function eql_error_message {
+    eql_log_debug "[E]" "$*"
+    error_message "$*"
+}
+
 
 # ------------------------------------------------------------------------------
 # iSCSI functions
@@ -29,7 +52,7 @@ TR=tr
 #   EQL_PASS - Equallogic PASSWORD
 #   EQL_MULTIHOST - Enable multihost access for volume. If empty, defaults to enabled.
 #   EQL_SECURITY_ACCESS - Security settings for volume. See Equallogic CLI docs for options. If empty, defaults to unrestricted.
-#   EQL_BASE_DEVICE - Base path used by host to mount targets
+#   EQL_BASE_DEVICE - Base path used by Equallogic HIT tools to mount targets
 #
 #   Default values set at remotes/datastore/eqliscsi/eqliscsi.conf file
 #
@@ -60,17 +83,20 @@ function eqladm_free_space {
     # Volume creation
     CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS pool select $EQL_POOL show"
     RETVAL=$($SUDO $CMD)
-    ERROR=$?
-    if [[ "$RETVAL" == *"Error"* ]] || [[ "$ERROR" -ne 0 ]]; then
-	log_error "Error getting free space on pool $EQL_POOL $RETVAL"
+    RC=$?
+    if [ "$RETVAL" == *"Error"* ] || [ "$RC" -ne 0 ]; then
+	eql_error_message "Error getting free space on pool $EQL_POOL $RETVAL"
 	return 1
     fi
 
     # Get size and free space from returned value
-    RETVAL=`echo "$RETVAL" | grep -e '^TotalCapacity: ' -e '^FreeSpace: '`
+    RETVAL=`echo "$RETVAL" | grep -e '^TotalCapacity: ' -e '^FreeSpace: ' | sed 's/TB/*1024*1024/;s/GB/*1024/'`
     RETVAL=${RETVAL//MB/}
     RETVAL=${RETVAL/TotalCapacity:/TOTAL_MB}
     RETVAL=${RETVAL/FreeSpace:/FREE_MB}
+    TOTAL=$(echo $RETVAL | awk '{ print $2}' | bc)
+    FREE=$(echo $RETVAL | awk '{ print $4}' | bc)
+    RETVAL="TOTAL_MB $TOTAL FREE_MB $FREE"
     # Return pool size and free space
     echo "$RETVAL"
     return 0
@@ -95,6 +121,7 @@ function eqladm_target_new {
     local CMD=""
     local RETVAL=""
     local ACCESS=""
+    local RC=""
 
     # If no security policy, defaults to unrestricted access
     if [ -z "$EQL_SECURITY_ACCESS" ]; then
@@ -104,20 +131,21 @@ function eqladm_target_new {
     # Volume creation
     CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS volume create $EQL_VOLUME $SIZE description '$EQL_VOL_DESCRIPTION' online $ACCESS pool $EQL_POOL $EQL_THINPROVISION"
     RETVAL=$($SUDO $CMD)
-    ERROR=$?
-    if [[ "$RETVAL" == *"Error"* ]] || [[ "$ERROR" -ne 0 ]]; then
-	log_error "Error creating volume $EQL_VOLUME on $EQL_HOST $RETVAL"
+    RC=$?
+    if [[ "$RETVAL" == *"Error"* ]] || [[ "$RC" -ne 0 ]]; then
+	eql_error_message "Error creating volume $EQL_VOLUME on $EQL_HOST $RETVAL"
 	return 1
     fi
 
     # Get volume IQN from returned value
     RETVAL=`echo "$RETVAL" | $SED '/iSCSI/,/./ !d' | $TR -d '\n' | $CUT -d' ' -f5`
     RETVAL=${RETVAL%?}
+    eql_log "New volume IQN: ${RETVAL}"
 
     # Set multihost and access rules
     eqladm_set_access $EQL_VOLUME
-    ERROR=$?
-    if [ "$ERROR" -ne 0 ]; then
+    RC=$?
+    if [ "$RC" -ne 0 ]; then
         return 1
     fi
 
@@ -143,6 +171,7 @@ function eqladm_target_clone {
     local CMD=""
     local RETVAL=""
     local ACCESS=""
+    local RC=""
 
     # If no security policy, defaults to unrestricted access
     if [ -z "$EQL_SECURITY_ACCESS" ]; then
@@ -152,21 +181,21 @@ function eqladm_target_clone {
     # Volume cloning
     CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS volume select $EQL_VOLUME clone $EQL_NEW_VOLUME description '$EQL_VOL_DESCRIPTION' online $ACCESS"
     RETVAL=$($SUDO $CMD)
-    ERROR=$?
-    if [[ "$RETVAL" == *"Error"* ]] || [[ "$ERROR" -ne 0 ]]; then
-	log_error "Error cloning $EQL_VOLUME to $EQL_NEW_VOLUME on $EQL_HOST $RETVAL"
+    RC=$?
+    if [[ "$RETVAL" == *"Error"* ]] || [[ "$RC" -ne 0 ]]; then
+	eql_error_message "Error cloning $EQL_VOLUME to $EQL_NEW_VOLUME on $EQL_HOST $RETVAL"
 	return 1
     fi
 
     # Get volume IQN from returned value
     RETVAL=`echo "$RETVAL" | $SED '/iSCSI/,/./ !d' | $TR -d '\n' | $CUT -d' ' -f5`
     RETVAL=${RETVAL%?}
-    log_error "$RETVAL"
+    eql_log "New volume IQN: ${RETVAL}"
 
     # Set multihost and access rules
     eqladm_set_access $EQL_NEW_VOLUME
-    ERROR=$?
-    if [ "$ERROR" -ne 0 ]; then
+    RC=$?
+    if [ "$RC" -ne 0 ]; then
         return 1
     fi
 
@@ -187,13 +216,14 @@ function eqladm_target_delete {
 
     local CMD=""
     local RETVAL=""
+    local RC=""
 
     # Set volume offline before deleting
     CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS volume select $EQL_VOLUME offline"
     RETVAL=$($SUDO $CMD)
-    ERROR=$?
-    if [[ "$RETVAL" == *"Error"* ]] || [[ "$ERROR" -ne 0 ]]; then
-	log_error "Error setting volume $EQL_VOLUME offline on $EQL_HOST $RETVAL"
+    RC=$?
+    if [[ "$RETVAL" == *"Error"* ]] || [[ "$RC" -ne 0 ]]; then
+	eql_error_message "Error setting volume $EQL_VOLUME offline on $EQL_HOST $RETVAL"
 	return 1
     fi
 
@@ -201,7 +231,7 @@ function eqladm_target_delete {
     CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS volume delete $EQL_VOLUME"
     RETVAL=$($SUDO $CMD)
     if [[ "$RETVAL" == *"% Error"* ]]; then
-	log_error "Error deleting volume $EQL_VOLUME on $EQL_HOST $RETVAL"
+	eql_error_message "Error deleting volume $EQL_VOLUME on $EQL_HOST $RETVAL"
 	return 1
     fi
     return 0
@@ -220,6 +250,7 @@ function eqladm_set_access {
 
     local CMD=""
     local RETVAL=""
+    local RC=""
 
     # Multihost access
     if [ -z "$EQL_MULTIHOST" ]; then
@@ -227,19 +258,17 @@ function eqladm_set_access {
     fi
     CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS volume select $EQL_VOLUME multihost-access $EQL_MULTIHOST"
     RETVAL=$($SUDO $CMD)
-    ERROR=$?
-    if [[ "$RETVAL" == *"Error"* ]] || [[ "$ERROR" -ne 0 ]]; then
-	log_error "Error setting volume $EQL_VOLUME multihost access on $EQL_HOST $RETVAL"
+    RC=$?
+    if [[ "$RETVAL" == *"Error"* ]] || [[ "$RC" -ne 0 ]]; then
+	eql_error_message "Error setting volume $EQL_VOLUME multihost access on $EQL_HOST $RETVAL"
 	return 1
     fi
     # Set access rules
-    if [ ! -z "$EQL_SECURITY_ACCESS" ]; then
-	CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS volume select $EQL_VOLUME access create $EQL_SECURITY_ACCESS"
-        RETVAL=$($SUDO $CMD)
-	if [[ "$RETVAL" == *"% Error"* ]]; then
-	    log_error "Error setting access rules to $EQL_VOLUME volume on $EQL_HOST $RETVAL"
-	    return 1
-        fi
+    CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS volume select $EQL_VOLUME access create $EQL_SECURITY_ACCESS"
+    RETVAL=$($SUDO $CMD)
+    if [[ "$RETVAL" == *"% Error"* ]]; then
+	eql_error_message "Error setting access rules to $EQL_VOLUME volume on $EQL_HOST $RETVAL"
+	return 1
     fi
     return 0
 }
@@ -255,18 +284,21 @@ function eqliscsi_discovery {
     echo "$ISCSIADM -m discoverydb -t st -p $EQL_HOST -I $EQL_IFACE -o new -o delete --discover"
 }
 
+# Get IQN from iscsiadm database: seek volume name
+function eqliscsi_get_iqn_from_node {
+    local VOLUME="$1"
+    echo "$ISCSIADM -m node | $GREP '"${VOLUME}"$' | $CUT -d' ' -f2"
+}
 
-# Login to target using ehcmcli (@param $1 - Target IQN)
+# Login to target (@param $1 - Target IQN)
 function eqliscsi_login {
     local IQN="$1"
-    #echo "$EQLEHCM login --target $IQN --portal $EQL_HOST"
     echo "$ISCSIADM -m node -T $IQN -p $EQL_HOST -I $EQL_IFACE -l"
 }
 
-# Logout from target using ehcmcli (@param $1 - Target IQN)
+# Logout from target (@param $1 - Target IQN)
 function eqliscsi_logout {
     local IQN="$1"
-    #echo "$EQLEHCM logout --target $IQN"
     echo "$ISCSIADM -m node -T $IQN -I $EQL_IFACE -u"
 }
 
@@ -285,7 +317,7 @@ function eqliscsi_get_iqn_target {
 # Returns IQN of volume from discovery database (iscsiadm) (@param $1 - Volume name)
 function eqliscsi_get_iqn_client {
     local EQL_VOLUME="$1"
-    echo `$SUDO $ISCSIADM -m discoverydb -t st -p $EQL_HOST -I $EQL_IFACE -o new -o delete --discover | grep $EQL_VOLUME$ | $CUT -d' ' -f2`
+    echo `$SUDO $ISCSIADM -m discoverydb -t st -p $EQL_HOST -I $EQL_IFACE -o new -o delete --discover | grep ${EQL_VOLUME}$ | $CUT -d' ' -f2`
 }
 
 # Returns command to retrieve IQN of volume from client host sessions (@param $1 - Volume name)
@@ -313,7 +345,9 @@ function eqliscsi_get_session_host {
 function eql_clean_volume_name {
     local VOLUME="$1"
     VOLUME=$(echo $VOLUME | $TR '[:upper:]' '[:lower:]')
-    echo "${VOLUME// /-}"
+    VOLUME=${VOLUME// /-}
+    VOLUME=${VOLUME//./-}
+    echo "${VOLUME}"
 }
 
 
@@ -334,7 +368,16 @@ function eql_src_get_iqn {
 # Returns volume part from source (@param $1 - source value in <host:iqn> format)
 function eql_src_get_volume {
     local SRC="$1"
-    echo "$(eql_clean_volume_name $(echo $SRC | $CUT -d: -f3 | $CUT -b37-))"
+    if [[ $SRC == *:iqn* ]]; then
+	# If uses old name, clean out (deprecated)
+	echo "$(eql_clean_volume_name $(echo $SRC | $CUT -d: -f3 | $CUT -b37-))"
+    else
+	if [[ $SRC == *:* ]]; then
+	    echo "$(echo $SRC | $CUT -d: -f2)"
+	else 
+	    echo "$SRC"
+	fi
+    fi
 }
 
 
@@ -348,148 +391,6 @@ function eql_link_get_volume {
 # Misc functions
 # ------------------------------------------------------------------------------
 
-# Executes a command, if it fails returns error message and returns
-# If a second parameter is present it is used as the error message when
-# the command fails
-#
-# Copied from scripts_common.sh, but uses return instead of exit to let the main
-# script handle the error if third param is "exit"
-function eql_exec_and_log
-{
-    message=$2
-    shopt -s nocasematch
-    exit_if_error=0 && [[ $3 == "exit" ]] && exit_if_error=1
-    shopt -u nocasematch
-
-    EXEC_LOG_ERR=`$1 2>&1 1>/dev/null`
-    EXEC_LOG_RC=$?
-
-    if [ $EXEC_LOG_RC -ne 0 ]; then
-        log_error "Command \"$1\" failed: $EXEC_LOG_ERR"
-
-        if [ -n "$2" ]; then
-            error_message "$2"
-        else
-            error_message "Error executing $1: $EXEC_LOG_ERR"
-        fi
-	if [ $exit_if_error -eq 0 ]; then 
-    	    return $EXEC_LOG_RC
-	else
-    	    exit $EXEC_LOG_RC
-	fi
-    fi
-}
-
-# Like exec_and_log but the first argument is the number of seconds
-# before here is timeout and kills the command
-#
-# NOTE: if the command is killed because a timeout the return code
-# will be 143 = 128+15 (SIGHUP)
-#
-# Copied from scripts_common.sh, but uses return instead of exit to let the main
-# script handle the error if third param is "exit"
-function eql_timeout_exec_and_log
-{
-    TIMEOUT=$1
-    shift
-
-    CMD="$1"
-    shopt -s nocasematch
-    exit_if_error=0 && [[ $2 == "exit" ]] && exit_if_error=1
-    shopt -u nocasematch
-
-    # Call original exec_and_log, to maintain behavior
-    exec_and_log "$CMD" &
-    CMD_PID=$!
-
-    # timeout process
-    (
-        sleep $TIMEOUT
-        kill $CMD_PID 2>/dev/null
-        log_error "Timeout executing $CMD"
-        error_message "Timeout executing $CMD"
-        exit -1
-    ) &
-    TIMEOUT_PID=$!
-
-    # stops the execution until the command finalizes
-    wait $CMD_PID 2>/dev/null
-    CMD_CODE=$?
-
-    # if the script reaches here the command finished before it
-    # consumes timeout seconds so we can kill timeout process
-    kill $TIMEOUT_PID 2>/dev/null 1>/dev/null
-    wait $TIMEOUT_PID 2>/dev/null
-
-    # checks the exit code of the command and returns if it is not 0
-    if [ "x$CMD_CODE" != "x0" ]; then
-	if [ $exit_if_error -eq 0 ]; then 
-    	    return $CMD_CODE
-	else
-    	    exit $CMD_CODE
-	fi
-    fi
-}
-
-#This function executes $2 at $1 host and report error $3
-# Copied from scripts_common.sh, but uses return instead of exit to let the main
-# script handle the error if fourth param is "exit"
-function eql_ssh_exec_and_log
-{
-    shopt -s nocasematch
-    exit_if_error=0 && [[ $4 == "exit" ]] && exit_if_error=1
-    shopt -u nocasematch
-
-    SSH_EXEC_ERR=`$SSH $1 sh -s 2>&1 1>/dev/null <<EOF
-$2
-EOF`
-    SSH_EXEC_RC=$?
-
-    if [ $SSH_EXEC_RC -ne 0 ]; then
-        log_error "Command \"$2\" failed: $SSH_EXEC_ERR"
-
-        if [ -n "$3" ]; then
-            error_message "$3"
-        else
-            error_message "Error executing $2: $SSH_EXEC_ERR"
-        fi
-
-	if [ $exit_if_error -eq 0 ]; then
-    	    return $SSH_EXEC_RC
-	else
-    	    exit $SSH_EXEC_RC
-	fi
-    fi
-}
-
-#Creates path ($2) at $1
-# Copied from scripts_common.sh, but uses return instead of exit to let the main
-# script handle the error if third param is "exit"
-function eql_ssh_make_path
-{
-    shopt -s nocasematch
-    exit_if_error=0 && [[ $3 == "exit" ]] && exit_if_error=1
-    shopt -u nocasematch
-
-    SSH_EXEC_ERR=`$SSH $1 sh -s 2>&1 1>/dev/null <<EOF
-if [ ! -d $2 ]; then
-   mkdir -p $2
-fi
-EOF`
-    SSH_EXEC_RC=$?
-
-    if [ $? -ne 0 ]; then
-        error_message "Error creating directory $2 at $1: $SSH_EXEC_ERR"
-
-	if [ $exit_if_error -eq 0 ]; then 
-    	    return $SSH_EXEC_RC
-	else
-    	    exit $SSH_EXEC_RC
-	fi
-    fi
-}
-
-
 function string_to_array
 {
     local IFS=";"
@@ -500,3 +401,9 @@ function string_to_array
     done
     unset IFS
 }
+
+
+# ------------------------------------------------------------------------------
+# Debug calls if ONE_MAD_DEBUG and EQL_MAD_DEBUG enabled (set on every script to log)
+# ------------------------------------------------------------------------------
+eql_log_debug "[C]" "$*"

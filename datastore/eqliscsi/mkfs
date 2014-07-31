@@ -34,6 +34,7 @@ fi
 
 . $LIB_LOCATION/sh/scripts_common.sh
 
+EQL_MAD_DEBUG=1
 DRIVER_PATH=$(dirname $0)
 source ${DRIVER_PATH}/../libfs.sh
 source ${DRIVER_PATH}/eqliscsi.conf
@@ -42,12 +43,12 @@ source ${DRIVER_PATH}/../../scripts_eqliscsi.sh
 # -------- Get mkfs and datastore arguments from OpenNebula core ------------
 
 DRV_ACTION=$1
-ID=$2
+IMID=$2
 
-XPATH="${DRIVER_PATH}/../xpath.rb -b $DRV_ACTION"
+UTILS_PATH="${DRIVER_PATH}/.."
+XPATH="$UTILS_PATH/xpath.rb -b $DRV_ACTION"
 
 unset i XPATH_ELEMENTS
-
 while IFS= read -r -d '' element; do
     XPATH_ELEMENTS[i++]="$element"
 done < <($XPATH     /DS_DRIVER_ACTION_DATA/DATASTORE/BASE_PATH \
@@ -80,7 +81,7 @@ EQL_PASS="${XPATH_ELEMENTS[7]:-$EQL_PASS}"
 EQL_MULTIHOST="${XPATH_ELEMENTS[8]:-$EQL_MULTIHOST}"
 EQL_SECURITY_ACCESS="${XPATH_ELEMENTS[9]:-"$EQL_SECURITY_ACCESS"}"
 EQL_THINPROVISION="${XPATH_ELEMENTS[10]:-"$EQL_THINPROVISION"}"
-EQL_VOLUME="$(eql_clean_volume_name ${XPATH_ELEMENTS[11]})"
+EQL_VOLUME="$(eql_clean_volume_name "${XPATH_ELEMENTS[11]}").${IMID}"
 EQL_VOL_DESCRIPTION="${XPATH_ELEMENTS[12]}"
 FSTYPE="${XPATH_ELEMENTS[13]}"
 SIZE="${XPATH_ELEMENTS[14]:-0}"
@@ -95,68 +96,61 @@ DEV="$EQL_BASE_DEVICE/$EQL_VOLUME"
 
 # ------------ Create the image to the repository ------------
 
+# If image type is save_as, exit. We don't need to create in advance the volume
+if [ "$FSTYPE" = "save_as" ]; then
+    echo "$EQL_VOLUME"
+    exit 0
+fi
+
 # Remote volume create on Equallogic (returns IQN)
-log "Creating volume $EQL_VOLUME on $EQL_HOST"
+eql_log "Creating volume $EQL_VOLUME on $EQL_HOST"
 IQN=$(eqladm_target_new $EQL_POOL $EQL_VOLUME $SIZE "$EQL_VOL_DESCRIPTION")
-ERROR=$?
-if [ "$ERROR" -ne 0 ]; then
-    log_error "Error creating volume $EQL_VOLUME on $EQL_HOST $IQN"
+RC=$?
+if [ "$RC" -ne 0 ]; then
+    error_message "Error creating volume $EQL_VOLUME on $EQL_HOST $IQN"
     exit 1
 fi
 
-# If FSTYPE not save_as...
-if [ "$FSTYPE" != "save_as" ] && [ "$FSTYPE" != "raw" ]; then
+# If FSTYPE not raw, create filesystem
+if [ "$FSTYPE" != "raw" ]; then
     # Discover iscsi target
-    log "Discover targets from $EQL_HOST"
-    eql_exec_and_log "$SUDO $(eqliscsi_discovery)" \
-	"Error discovering targets from $EQL_HOST" \
-	"exit"
+    eql_log "Discover targets from $EQL_HOST"
+    exec_and_log "$SUDO $(eqliscsi_discovery)" "Error discovering targets from $EQL_HOST"
 
     # Connect to iscsi target and login
-    log "Connecting to $EQL_HOST:$IQN"
-    eql_exec_and_log "$SUDO $(eqliscsi_login $IQN)" \
-	"Error connecting to $EQL_HOST:$IQN" \
-	"exit"
+    eql_log "Connecting to $EQL_HOST:$IQN"
+    exec_and_log "$SUDO $(eqliscsi_login $IQN)" "Error connecting to $EQL_HOST:$IQN"
 
     # Wait connection
     sleep $EQL_WAIT_TIME
 
     # Create partition on device
-    log "Creating partition on $DEV"
-    eql_exec_and_log "$SUDO parted -s $DEV mktable gpt" \
-	"Error creating partition label on $DEV"
-    ERROR=$?
+    ERROR=""
+    eql_log "Creating partition on $DEV"
+    exec_and_set_error "$SUDO parted -s $DEV mktable gpt" "Error creating partition label on $DEV"
 
-    if [ "$ERROR" -eq 0 ]; then
-	eql_exec_and_log "$SUDO parted -s $DEV mkpart primary 0% 100%" \
-	    "Error creating partition on $DEV"
-	ERROR=$?
-        if [ "$ERROR" -eq 0 ]; then
+    if [ -z "$ERROR" ]; then
+	exec_and_set_error "$SUDO parted -s $DEV mkpart primary 0% 100%" "Error creating partition on $DEV"
+        if [ -z "$ERROR" ]; then
 	    # Create filesystem on device
-	    log "Creating filesystem $FSTYPE on $DEV"
+	    eql_log "Creating filesystem $FSTYPE on $DEV"
 	    PARTITION="${DEV}p1"
 	    # Wait partition appearance after udev processing
-	    sleep 5
-	    eql_exec_and_log "$SUDO $(mkfs_command "$PARTITION" "$FSTYPE")" \
-		"Error creating filesystem $FSTYPE on $PARTITION"
-	    ERROR=$?
+	    sleep $EQL_WAIT_TIME
+	    exec_and_set_error "$SUDO $(mkfs_command "$PARTITION" "$FSTYPE")" "Error creating filesystem $FSTYPE on $PARTITION"
 	fi
     fi
+
     # Let continue to disconnect target ever if ended in error
-
     # Disconnect target
-    log "Disconnecting from $EQL_HOST:$IQN"
-    eql_exec_and_log "$SUDO $(eqliscsi_logout $IQN)" \
-	"Error disconnecting from $EQL_HOST:$IQN"
-    ERROR=$?
+    eql_log "Disconnecting from $EQL_HOST:$IQN"
+    exec_and_log "$SUDO $(eqliscsi_logout $IQN)" "Error disconnecting from $EQL_HOST:$IQN"
 
-    # Exits if crete filesystem or disconnect ends with error
-    if [ "$ERROR" -ne 0 ]; then
+    # Exits if create filesystem or disconnect ends with error
+    if [ ! -z "$ERROR" ]; then
 	exit 1
     fi
 fi
 
-# Return HOST+IQN
-DST="$EQL_HOST:$IQN"
-
-echo "$DST"
+# Return VOLUME NAME
+echo "$EQL_VOLUME"

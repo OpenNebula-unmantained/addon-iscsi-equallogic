@@ -41,7 +41,7 @@ EQL_IFACE="eql00"
 EQL_WAIT_TIME=1
 
 # Lists of hosts (separated by spaces) for which no iscsiadm login or logout
-# is performed.
+# is performed. Include here OpenNebula frontends to avoid open sessions on mv operations.
 NO_ISCSI=""
 
 # Utilities

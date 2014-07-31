@@ -33,6 +33,7 @@ fi
 
 . $LIB_LOCATION/sh/scripts_common.sh
 
+EQL_MAD_DEBUG=1
 DRIVER_PATH=$(dirname $0)
 source ${DRIVER_PATH}/../libfs.sh
 source ${DRIVER_PATH}/eqliscsi.conf
@@ -41,14 +42,12 @@ source ${DRIVER_PATH}/../../scripts_eqliscsi.sh
 # -------- Get cp and datastore arguments from OpenNebula core ------------
 
 DRV_ACTION=$1
-ID=$2
+IMID=$2
 
 UTILS_PATH="${DRIVER_PATH}/.."
-
 XPATH="$UTILS_PATH/xpath.rb -b $DRV_ACTION"
 
 unset i XPATH_ELEMENTS
-
 while IFS= read -r -d '' element; do
     XPATH_ELEMENTS[i++]="$element"
 done < <($XPATH     /DS_DRIVER_ACTION_DATA/DATASTORE/BASE_PATH \
@@ -78,8 +77,8 @@ EQL_USER="${XPATH_ELEMENTS[6]:-$EQL_USER}"
 EQL_PASS="${XPATH_ELEMENTS[7]:-$EQL_PASS}"
 EQL_MULTIHOST="${XPATH_ELEMENTS[8]:-$EQL_MULTIHOST}"
 EQL_SECURITY_ACCESS="${XPATH_ELEMENTS[9]:-"$EQL_SECURITY_ACCESS"}"
-EQL_NEW_VOLUME="$(eql_clean_volume_name "${XPATH_ELEMENTS[10]}")"
-EQL_VOLUME="$(eql_src_get_volume ${XPATH_ELEMENTS[11]})"
+EQL_NEW_VOLUME="$(eql_clean_volume_name "${XPATH_ELEMENTS[10]}").${IMID}"
+EQL_VOLUME="$(eql_src_get_volume "${XPATH_ELEMENTS[11]}")"
 SIZE="${XPATH_ELEMENTS[12]}"
 EQL_VOL_DESCRIPTION="${XPATH_ELEMENTS[13]}"
 # Overwrite datastore defaults with image values for EQL
@@ -89,16 +88,14 @@ EQL_SECURITY_ACCESS="${XPATH_ELEMENTS[15]:-"$EQL_SECURITY_ACCESS"}"
 set_up_datastore "$BASE_PATH" "$RESTRICTED_DIRS" "$SAFE_DIRS" "$UMASK"
 
 # Remote volume cloning on Equallogic (returns IQN)
-log "Cloning volume $EQL_VOLUME on $EQL_HOST to $EQL_NEW_VOLUME"
+eql_log "Cloning volume $EQL_VOLUME on $EQL_HOST to $EQL_NEW_VOLUME"
 IQN=$(eqladm_target_clone $EQL_VOLUME $EQL_NEW_VOLUME "$EQL_VOL_DESCRIPTION")
-ERROR=$?
-if [ "$ERROR" -ne 0 ]; then
-    log_error "Error cloning from volume $EQL_VOLUME to $EQL_NEW_VOLUME on $EQL_HOST $IQN"
+RC=$?
+if [ "$RC" -ne 0 ]; then
+    eql_error_message "Error cloning from volume $EQL_VOLUME to $EQL_NEW_VOLUME on $EQL_HOST $IQN"
     exit 1
 fi
-log "Cloned image $IQN to $EQL_NEW_VOLUME"
+eql_log "Cloned image $EQL_VOLUME to $EQL_NEW_VOLUME"
 
-# Return HOST+IQN
-DST="$EQL_HOST:$IQN"
-
-echo "$DST"
+# Return NEW VOLUME NAME
+echo "$EQL_NEW_VOLUME"

@@ -38,6 +38,7 @@ fi
 
 . $TMCOMMON
 
+EQL_MAD_DEBUG=1
 TM_PATH=$(dirname $0)
 source ${TM_PATH}/../../datastore/eqliscsi/eqliscsi.conf
 source ${TM_PATH}/../../scripts_eqliscsi.sh
@@ -52,13 +53,11 @@ DST_HOST=`arg_host $DST`
 #-------------------------------------------------------------------------------
 # Get IQN information and EQL vars
 #-------------------------------------------------------------------------------
-
 DISK_ID=$(echo "$DST_PATH" | $AWK -F. '{print $NF}')
 
 XPATH="${TM_PATH}/../../datastore/xpath.rb --stdin"
 
 unset i XPATH_ELEMENTS
-
 while IFS= read -r -d '' element; do
     XPATH_ELEMENTS[i++]="$element"
 done < <(onevm show -x $VMID| $XPATH \
@@ -67,7 +66,7 @@ done < <(onevm show -x $VMID| $XPATH \
                     /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/DATASTORE_ID \
                     /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/IMAGE_ID)
 
-SRC="${XPATH_ELEMENTS[0]}"
+EQL_VOLUME="$(eql_src_get_volume ${XPATH_ELEMENTS[0]})"
 PERSISTENT="${XPATH_ELEMENTS[1]}"
 DSID="${XPATH_ELEMENTS[2]}"
 IMID="${XPATH_ELEMENTS[3]}"
@@ -88,20 +87,10 @@ EQL_POOL="${XPATH_ELEMENTS[1]:-$EQL_POOL}"
 EQL_USER="${XPATH_ELEMENTS[2]:-$EQL_USER}"
 EQL_PASS="${XPATH_ELEMENTS[3]:-$EQL_PASS}"
 
-#-------------------------------------------------------------------------------
-# Retrieve volume and IQN from iscsi discovery database if not persistent
-# Equallogic generates IQN with random numbers when cloning source image (not stored in VM template)
-# If persistent, get them from VM template
-#-------------------------------------------------------------------------------
+# Adjust source volume name if not persistent
 if [ -z "$PERSISTENT" ]; then
-    SRC=$SRC-$VMID
-    EQL_VOLUME="$(eql_src_get_volume $SRC)"
-    IQN="$(eqliscsi_get_iqn_client $EQL_VOLUME)"
-else
-    IQN="$(eql_src_get_iqn $SRC)"
-    EQL_VOLUME="$(eql_src_get_volume $SRC)"
+    EQL_VOLUME="$EQL_VOLUME-$VMID"
 fi
-
 
 #-------------------------------------------------------------------------------
 # Remove directory if dst_path is a directory
@@ -109,43 +98,38 @@ fi
 
 if [ `is_disk $DST_PATH` -eq 0 ]; then
     # Directory
-    log "Deleting $DST_PATH"
-    eql_ssh_exec_and_log "$DST_HOST" "rm -rf $DST_PATH" \
-	"Error deleting $DST_PATH" \
-	"exit"
+    eql_log "Deleting $DST_PATH"
+    ssh_exec_and_log "$DST_HOST" "rm -rf $DST_PATH" "Error deleting $DST_PATH"
     exit 0
 fi
 
 #-------------------------------------------------------------------------------
 # Logout from the iSCSI target in the hypervisor
 #-------------------------------------------------------------------------------
-
 LOGOUT_CMD=$(cat <<EOF
     set -e
-    $SUDO $(eqliscsi_logout "$IQN")
+    IQN=\$($SUDO $(eqliscsi_get_iqn_from_node "$EQL_VOLUME"))
+    $SUDO $(eqliscsi_logout "\$IQN")
 EOF
 )
 
-eql_ssh_exec_and_log "$DST_HOST" "$LOGOUT_CMD" \
-    "Error logging out $DST_HOST:$IQN" \
-    "exit"
+eql_log "Logging out $DST_HOST $LOGOUT_CMD"
+ssh_exec_and_log "$DST_HOST" "$LOGOUT_CMD" "Error logging out $DST_HOST:$IQN"
 
 #-------------------------------------------------------------------------------
 # Remove target volume in the Equallogic
 #-------------------------------------------------------------------------------
 
 # Don't delete if persistent
-if [ "$PERSISTENT" = "YES" ]; then
-    exit 0
+if [ -z "$PERSISTENT" ]; then
+    # Remote volume remove on Equallogic
+    eql_log "Removing volume $EQL_VOLUME from $EQL_HOST"
+    RETVAL=$(eqladm_target_delete $EQL_VOLUME)
+    RC=$?
+    if [ "$RC" -ne 0 ]; then
+	eql_error_message "Error deleting volume $EQL_VOLUME on $EQL_HOST $RETVAL"
+	exit 1
+    fi
+    eql_log "Volume $EQL_VOLUME removed from $EQL_HOST"
 fi
-
-# Remote volume remove on Equallogic
-log "Removing volume $IQN from $EQL_HOST"
-RETVAL=$(eqladm_target_delete $EQL_VOLUME)
-ERROR=$?
-if [ "$ERROR" -ne 0 ]; then
-    log_error "Error deleting volume $EQL_VOLUME on $EQL_HOST $RETVAL"
-    exit 1
-fi
-
 exit 0

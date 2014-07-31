@@ -40,6 +40,7 @@ fi
 
 . $TMCOMMON
 
+EQL_MAD_DEBUG=1
 TM_PATH=$(dirname $0)
 source ${TM_PATH}/../../datastore/eqliscsi/eqliscsi.conf
 source ${TM_PATH}/../../scripts_eqliscsi.sh
@@ -58,96 +59,107 @@ DST_HOST=`arg_host $DST`
 DST_DIR=`dirname $DST_PATH`
 
 if [ `is_disk $SRC_PATH` -eq 0 ]; then
-    eql_ssh_make_path $DST_HOST $DST_DIR "exit"
-
-    log "Moving $SRC to $DST"
-
-    eql_exec_and_log "$SCP -r $SRC $DST" "Could not copy $SRC to $DST" "exit"
-
-    eql_ssh_exec_and_log "$SRC_HOST" "rm -rf $SRC_PATH" \
-        "Could not remove $SRC_HOST:$SRC_PATH"
-	"exit"
-
+    ssh_make_path $DST_HOST $DST_DIR
+    eql_log "Moving $SRC to $DST"
+    exec_and_log "$SCP -r $SRC $DST" "Could not copy $SRC to $DST"
+    ssh_exec_and_log "$SRC_HOST" "rm -rf $SRC_PATH" "Could not remove $SRC_HOST:$SRC_PATH"
     exit 0
 fi
 
 if [ "$SRC" == "$DST" ]; then
-    log "Not moving $SRC to $DST, they are the same path"
-	exit 0
+    eql_log "Not moving $SRC to $DST, they are the same path"
+    exit 0
 fi
 
 #-------------------------------------------------------------------------------
 # Get image information
 #-------------------------------------------------------------------------------
 
+#-------------------------------------------------------------------------------
+# Get image information
+#-------------------------------------------------------------------------------
+# Get disk id from SRC path
+DISK_ID=$(echo "$SRC_PATH" | $AWK -F. '{print $NF}')
+
+# Get datastore/image data from VM disk
 XPATH="${TM_PATH}/../../datastore/xpath.rb --stdin"
 
 unset i XPATH_ELEMENTS
-
-DISK_ID=$(echo "$SRC_PATH" | $AWK -F. '{print $NF}')
-
 while IFS= read -r -d '' element; do
     XPATH_ELEMENTS[i++]="$element"
 done < <(onevm show -x $VMID| $XPATH \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/DATASTORE_ID \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/IMAGE_ID \
                     /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/SOURCE \
+                    /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/SAVE_AS \
                     /VM/TEMPLATE/DISK[DISK_ID=$DISK_ID]/PERSISTENT)
 
-SRC="${XPATH_ELEMENTS[0]}"
-PERSISTENT="${XPATH_ELEMENTS[1]}"
+SRC_DSID="${XPATH_ELEMENTS[0]}"
+SRC_IMID="${XPATH_ELEMENTS[1]}"
+EQL_VOLUME="$(eql_src_get_volume ${XPATH_ELEMENTS[2]})"
+SAVE_AS="${XPATH_ELEMENTS[3]}"
+PERSISTENT="${XPATH_ELEMENTS[4]}"
 
+# Adjust source volume name if not persistent
 if [ -z "$PERSISTENT" ]; then
-    SRC=$SRC-$VMID
+    EQL_VOLUME=$EQL_VOLUME-$VMID
 fi
 
-EQL_HOST="$(eql_src_get_host $SRC)"
-IQN="$(eql_src_get_iqn $SRC)"
-EQL_VOLUME="$(eql_src_get_volume $SRC)"
-EQL_DEV="$EQL_BASE_DEVICE/$EQL_VOLUME"
-
-#-------------------------------------------------------------------------------
-# Logout from SRC_HOST
-#-------------------------------------------------------------------------------
-
-if is_iscsi "$SRC_HOST"; then
-    log "Logging out of $SRC_PATH in $SRC_HOST"
-
-    LOGOUT_CMD=$(cat <<EOF
+# Volume logout at host
+LOGOUT_CMD=$(cat <<EOF
     set -e
-    $SUDO $(eqliscsi_logout "$IQN")
+    IQN=\$($SUDO $(eqliscsi_get_iqn_from_node "$EQL_VOLUME"))
+    $SUDO $(eqliscsi_logout "\$IQN")
 EOF
 )
 
-    eql_ssh_exec_and_log "$SRC_HOST" "$LOGOUT_CMD" \
-        "Error logging out $SRC_HOST:$SRC_PATH" \
-	"exit"
+if is_iscsi "$SRC_HOST"; then
+    eql_log "Logging out $EQL_VOLUME at $SRC_HOST $LOGOUT_CMD"
+    ssh_exec_and_log "$SRC_HOST" "$LOGOUT_CMD" "Error logging out $IQN"
 fi
 
 #-------------------------------------------------------------------------------
 # Login to DST_HOST
 #-------------------------------------------------------------------------------
 if is_iscsi "$DST_HOST"; then
-    log "Logging in to $IQN in $DST_HOST"
+    # Get EQL_HOST from datastore SRC_DSID
+    unset i XPATH_ELEMENTS
+    while IFS= read -r -d '' element; do
+	XPATH_ELEMENTS[i++]="$element"
+    done < <(onedatastore show -x $SRC_DSID| $XPATH \
+	                /DATASTORE/TEMPLATE/EQL_HOST)
 
-    LOGIN_CMD=$(cat <<EOF
+    EQL_HOST="${XPATH_ELEMENTS[0]:-$EQL_HOST}"
+    EQL_DEV="$EQL_BASE_DEVICE/$EQL_VOLUME"
+
+    # Construct command to discover target, login and link the device
+    LINK_CMD=$(cat <<EOF
 	set -e
 	mkdir -p $DST_DIR
 	$SUDO $(eqliscsi_discovery)
-	$SUDO $(eqliscsi_login "$IQN")
-        ERROR=\$?
-	if [ "\$ERROR" -ne 0 ]; then
-    	    exit \$ERROR
+	IQN=\$($SUDO $(eqliscsi_get_iqn_from_node "$EQL_VOLUME"))
+	$SUDO $(eqliscsi_login "\$IQN")
+	RC=\$?
+	if [ "\$RC" -ne 0 ]; then
+	    exit \$RC
 	fi
-	# poll
-	while [ ! -L "$EQL_DEV" ]; do
+	# poll 10 secs for iSCSI device
+	x=0
+	while [ "\$x" -lt 10 -a ! -L "$EQL_DEV" ]; do
+	    x=\$((x+1))
 	    sleep 1
 	done
-	ln -sf "$EQL_DEV" "$DST_PATH"
+	if [ -L "$EQL_DEV" ]; then
+	    ln -sf "$EQL_DEV" "$DST_PATH"
+	else
+	    echo "iSCSI device "$EQL_DEV" not found on time"
+	    exit 1
+	fi
 EOF
 )
 
-    eql_ssh_exec_and_log "$DST_HOST" "$LOGIN_CMD" \
-        "Error logging in $EQL_HOST:$IQN" \
-	"exit"
+    eql_log "$DST_HOST" "$LINK_CMD"
+    ssh_exec_and_log "$DST_HOST" "$LINK_CMD" "Error linking $DST_HOST:$EQL_DEV"
 fi
 
 exit 0
