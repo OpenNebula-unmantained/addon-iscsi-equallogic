@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # Echoes volume name from ID_PATH received as param 1
 # /etc/udev/scripts/eqliscsi_get_volume.sh
