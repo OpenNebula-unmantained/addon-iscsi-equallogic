@@ -39,7 +39,7 @@ fi
 
 source $TMCOMMON
 
-
+EQL_MAD_DEBUG=1
 TM_PATH=$(dirname $0)
 source ${TM_PATH}/../../datastore/eqliscsi/eqliscsi.conf
 source ${TM_PATH}/../../scripts_eqliscsi.sh
@@ -74,10 +74,13 @@ DISK_PERSISTENT_ARRAY=( $(string_to_array ${XPATH_ELEMENTS[4]}) )
 
 for i in "${!TM_MAD_ARRAY[@]}"
 do
-    TM_MAD_CALL="${TM_PATH}/../${TM_MAD_ARRAY[i]}/premigrate $SRC_HOST $DST_HOST $TEMPLATE $VMID $DSID ${DISK_SOURCE_ARRAY[i]} ${DISK_ID_ARRAY[i]} ${DISK_DS_ARRAY[i]} ${DISK_PERSISTENT_ARRAY[i]}"
-    CURR_PATH=$(pwd)
-    cd "${TM_PATH}/../${TM_MAD_ARRAY[i]}"
-    bash $TM_MAD_CALL
-    cd $CURR_PATH
+    # Call eqliscsi TM premigrate if TM_MAD matches eqliscsi (for each disk used by the VM)
+    if [ ${TM_MAD_ARRAY[i]} == "eqliscsi" ]; then
+	TM_MAD_CALL="${TM_PATH}/../${TM_MAD_ARRAY[i]}/premigrate $SRC_HOST $DST_HOST $TEMPLATE $VMID $DSID ${DISK_SOURCE_ARRAY[i]} ${DISK_ID_ARRAY[i]} ${DISK_DS_ARRAY[i]} ${DISK_PERSISTENT_ARRAY[i]}"
+	CURR_PATH=$(pwd)
+	cd "${TM_PATH}/../${TM_MAD_ARRAY[i]}"
+	bash $TM_MAD_CALL
+	cd $CURR_PATH
+    fi
 done
 exit 0

@@ -23,7 +23,7 @@
 function eql_log_debug {
     if [ $ONE_MAD_DEBUG -eq 1 ] && [ $EQL_MAD_DEBUG -eq 1 ]; then
 	local EQL_LOG_FILE="/var/log/one/one_eqliscsi.log"
-	local SCRIPT_NAME=$(basename $0)
+	local SCRIPT_NAME="$0"
 	local TIMESTAMP=$(date +"[%F %T]")
 	local DEBUG_MSG="$*"
 	echo ${TIMESTAMP} ${SCRIPT_NAME}: "${DEBUG_MSG}" >> ${EQL_LOG_FILE}
