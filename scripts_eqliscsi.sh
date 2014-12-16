@@ -68,7 +68,43 @@ function eql_error_message {
 # iSCSI functions executed on target Equallogic group controller
 #       using EqlCliExec.py (ssh)
 # ------------------------------------------------------------------------------
-#
+
+#-------------------------------------------------------------------------------
+# Creates lock files to prevent more than 8 ssh commands to Equallogic
+#-------------------------------------------------------------------------------
+function eql_cmd_lock() {
+    # Prevent more than 7 parallel executions of EQLCMD
+    local lock_dir="/var/lib/one/.eql_lock"
+    local lock_file="eql-$(date +%Y%m%d%H%M%S%N)"
+    local max_locks=7
+    local wait_time=5
+    local timeout=6 # 30 secs
+    local num_locks=0
+
+    # Check and create lock dir
+    [[ -d ${lock_dir} ]] || mkdir -p ${lock_dir}
+
+    # Count lock files
+    num_locks=$(ls -1 ${lock_dir} | wc -l)
+    # If less than 7, it's ok to continue
+    # Wait until num_locks is less than 7 or timeout
+    local x=0
+    while [ "${num_locks}" -ge ${max_locks} -a "${x}" -lt ${timeout} ]; do
+        sleep ${wait_time}
+        x=$((x+1))
+        num_locks=$(ls -1 ${lock_dir} | wc -l)
+    done
+    if [[ ${x} -lt ${timeout} ]]; then
+        touch "${lock_dir}/${lock_file}"
+        echo $lock_file
+    fi
+}
+
+function eql_cmd_lock_release() {
+    local lock_dir="/var/lib/one/.eql_lock"
+    rm ${lock_dir}/${1}
+}
+
 #-------------------------------------------------------------------------------
 # Get pool size and free space
 #
@@ -80,10 +116,18 @@ function eqladm_free_space {
     local CMD=""
     local RETVAL=""
 
-    # Volume creation
+    # Check pool free space
+    local eql_lock=""
+    eql_lock=$(eql_cmd_lock)
+    if [[ -z ${eql_lock} ]]; then
+	eql_error_message "Timeout getting free space on pool $EQL_POOL"
+	return 1
+    fi
     CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS pool select $EQL_POOL show"
     RETVAL=$($SUDO $CMD)
     RC=$?
+
+    eql_cmd_lock_release ${eql_lock}
     if [ "$RETVAL" == *"Error"* ] || [ "$RC" -ne 0 ]; then
 	eql_error_message "Error getting free space on pool $EQL_POOL $RETVAL"
 	return 1
@@ -129,9 +173,17 @@ function eqladm_target_new {
     fi
 
     # Volume creation
+    local eql_lock=""
+    eql_lock=$(eql_cmd_lock)
+    if [[ -z ${eql_lock} ]]; then
+	eql_error_message "Timeout creating volume $EQL_VOLUME on $EQL_HOST"
+	return 1
+    fi
     CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS volume create $EQL_VOLUME $SIZE description '$EQL_VOL_DESCRIPTION' online $ACCESS pool $EQL_POOL $EQL_THINPROVISION"
     RETVAL=$($SUDO $CMD)
     RC=$?
+
+    eql_cmd_lock_release ${eql_lock}
     if [[ "$RETVAL" == *"Error"* ]] || [[ "$RC" -ne 0 ]]; then
 	eql_error_message "Error creating volume $EQL_VOLUME on $EQL_HOST $RETVAL"
 	return 1
@@ -179,9 +231,17 @@ function eqladm_target_clone {
     fi
 
     # Volume cloning
+    local eql_lock=""
+    eql_lock=$(eql_cmd_lock)
+    if [[ -z ${eql_lock} ]]; then
+	eql_error_message "Timeout cloning volume $EQL_VOLUME on $EQL_HOST"
+	return 1
+    fi
     CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS volume select $EQL_VOLUME clone $EQL_NEW_VOLUME description '$EQL_VOL_DESCRIPTION' online $ACCESS"
     RETVAL=$($SUDO $CMD)
     RC=$?
+
+    eql_cmd_lock_release ${eql_lock}
     if [[ "$RETVAL" == *"Error"* ]] || [[ "$RC" -ne 0 ]]; then
 	eql_error_message "Error cloning $EQL_VOLUME to $EQL_NEW_VOLUME on $EQL_HOST $RETVAL"
 	return 1
@@ -219,17 +279,32 @@ function eqladm_target_delete {
     local RC=""
 
     # Set volume offline before deleting
+    local eql_lock=""
+    eql_lock=$(eql_cmd_lock)
+    if [[ -z ${eql_lock} ]]; then
+	eql_error_message "Timeout setting volume $EQL_VOLUME offline on $EQL_HOST"
+	return 1
+    fi
     CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS volume select $EQL_VOLUME offline"
     RETVAL=$($SUDO $CMD)
     RC=$?
+
+    eql_cmd_lock_release ${eql_lock}
     if [[ "$RETVAL" == *"Error"* ]] || [[ "$RC" -ne 0 ]]; then
 	eql_error_message "Error setting volume $EQL_VOLUME offline on $EQL_HOST $RETVAL"
 	return 1
     fi
 
     # Delete volume
+    eql_lock=$(eql_cmd_lock)
+    if [[ -z ${eql_lock} ]]; then
+	eql_error_message "Timeout deleting volume $EQL_VOLUME on $EQL_HOST"
+	return 1
+    fi
     CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS volume delete $EQL_VOLUME"
     RETVAL=$($SUDO $CMD)
+
+    eql_cmd_lock_release ${eql_lock}
     if [[ "$RETVAL" == *"% Error"* ]]; then
 	eql_error_message "Error deleting volume $EQL_VOLUME on $EQL_HOST $RETVAL"
 	return 1
@@ -256,16 +331,31 @@ function eqladm_set_access {
     if [ -z "$EQL_MULTIHOST" ]; then
 	EQL_MULTIHOST="enable"
     fi
+    local eql_lock=""
+    eql_lock=$(eql_cmd_lock)
+    if [[ -z ${eql_lock} ]]; then
+	eql_error_message "Timeout setting volume $EQL_VOLUME multihost access on $EQL_HOST"
+	return 1
+    fi
     CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS volume select $EQL_VOLUME multihost-access $EQL_MULTIHOST"
     RETVAL=$($SUDO $CMD)
     RC=$?
+
+    eql_cmd_lock_release ${eql_lock}
     if [[ "$RETVAL" == *"Error"* ]] || [[ "$RC" -ne 0 ]]; then
 	eql_error_message "Error setting volume $EQL_VOLUME multihost access on $EQL_HOST $RETVAL"
 	return 1
     fi
     # Set access rules
+    eql_lock=$(eql_cmd_lock)
+    if [[ -z ${eql_lock} ]]; then
+	eql_error_message "Timeout setting volume $EQL_VOLUME access rules on $EQL_HOST"
+	return 1
+    fi
     CMD="$EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS volume select $EQL_VOLUME access create $EQL_SECURITY_ACCESS"
     RETVAL=$($SUDO $CMD)
+
+    eql_cmd_lock_release ${eql_lock}
     if [[ "$RETVAL" == *"% Error"* ]]; then
 	eql_error_message "Error setting access rules to $EQL_VOLUME volume on $EQL_HOST $RETVAL"
 	return 1
@@ -311,7 +401,13 @@ function eqliscsi_logout {
 # Returns IQN of volume from EQL_HOST (@param $1 - Volume name)
 function eqliscsi_get_iqn_target {
     local EQL_VOLUME="$1"
+    local eql_lock=""
+    eql_lock=$(eql_cmd_lock)
+    if [[ -z ${eql_lock} ]]; then
+	return
+    fi
     echo `$SUDO $EQLADM -g $EQL_HOST -a $EQL_USER -p $EQL_PASS "volume show $EQL_VOLUME" | grep "iSCSI Name" | $CUT -d' ' -f3`
+    eql_cmd_lock_release ${eql_lock}
 }
 
 # Returns IQN of volume from discovery database (iscsiadm) (@param $1 - Volume name)
