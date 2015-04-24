@@ -443,6 +443,7 @@ function eql_clean_volume_name {
     VOLUME=$(echo $VOLUME | $TR '[:upper:]' '[:lower:]')
     VOLUME=${VOLUME// /-}
     VOLUME=${VOLUME//./-}
+    VOLUME=${VOLUME//_/-}
     echo "${VOLUME}"
 }
 
