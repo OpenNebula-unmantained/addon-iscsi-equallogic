@@ -1,0 +1,167 @@
+#!/bin/bash
+#
+# pdns-update-host:
+# Adds/update/delete dynamic hosts to multiple PowerDNS zones (A and PTR)
+# 
+# - Cleans all HOST ($1) records (A and PTR) from PowerDNS MySQL database if one_vm field = true
+# - Inserts one_vm = true in A and PTR records to avoid interference with static DNS records
+# Add one_vm field to powerdns dabatase: ALTER TABLE records ADD one_vm BOOLEAN DEFAULT 0;
+#
+# Parameters:
+#   $1: ACTION: UPDATE or DELETE
+#   $2: VM ID
+#   $3: VM Template (Base64)
+#
+# Config vars:
+#   DB_xxx: MySQL connection parameters
+#   TTL: Default TTL for DNS records (60)
+#   DOMAINS: Named array to hold A zones (must be indexed to match DNS zones and IP networks passed)
+#   DOMAINS_PTR: Nadmed array to hold PTR zones (must be indexed to match DNS zones and IP networks passed)
+#   TIMESTAMP: Current unix time by default
+#
+
+# Parameters
+ACTION=$1
+ID=$2
+TEMPLATE=$3
+
+# Config vars
+DB_USER="pdns_admin"
+DB_PASS="ahz5iosooM"
+DB_NAME="powerdns"
+DB_HOST="172.20.50.12"
+
+TTL="60"
+
+TIMESTAMP=`date +%s`
+
+##############################################################
+
+# Locate domain id
+function get_domain_id {
+    local SELECT
+    local RESULT
+    SELECT="SELECT id FROM domains WHERE name = '"${1}"';"
+    RESULT=`mysql -h${DB_HOST} -u${DB_USER} -p${DB_PASS} ${DB_NAME} -NB -e "${SELECT}"`
+    echo "$RESULT"
+}
+
+# Clean VM name
+function clean_domain_name
+{
+    local CLEAN
+    # Strip domain part
+    CLEAN=$(echo "${1}" | cut -d. -f1)
+    # Strip VM number and service number
+    if [[ "$CLEAN" == *"service"* ]]; then
+        CLEAN=$(echo "${CLEAN}" | cut -d '_' -f1)
+    fi
+    # Replace spaces with _
+    CLEAN=${CLEAN// /_}
+    # Convert to lowercase
+    CLEAN=`echo -n "${CLEAN}" | awk '{print tolower($0)}'`
+    # Remove non alphanum chars
+    CLEAN=${CLEAN//[^a-z0-9]/}
+    echo "${CLEAN}"
+}
+
+##############################################################
+
+
+# -------- Set up the environment to source common tools & conf ------------
+if [ -z "${ONE_LOCATION}" ]; then
+    LIB_LOCATION=/usr/lib/one
+else
+    LIB_LOCATION=$ONE_LOCATION/lib
+fi
+
+. $LIB_LOCATION/sh/scripts_common.sh
+
+HOOK_PATH=$(dirname $0)
+
+
+# -------- Get VM name and IPs from VM template ------------
+UTILS_PATH="${HOOK_PATH}/../datastore/"
+
+XPATH="$UTILS_PATH/xpath.rb -b $TEMPLATE"
+unset i XPATH_ELEMENTS
+
+while IFS= read -r -d '' element; do
+    XPATH_ELEMENTS[i++]="$element"
+done < <($XPATH     /VM/NAME \
+		    /VM/TEMPLATE/CONTEXT/HOSTNAME \
+		    /VM/TEMPLATE/CONTEXT/ETH0_SEARCH_DOMAIN \
+		    /VM/TEMPLATE/CONTEXT/ETH0_IP \
+		    /VM/TEMPLATE/CONTEXT/BASE_NUM \
+	)
+
+VM_NAME="${XPATH_ELEMENTS[0]}"
+VM_NAME="${XPATH_ELEMENTS[1]:-$VM_NAME}"
+VM_SEARCH_DOMAIN="${XPATH_ELEMENTS[2]}"
+VM_NET_IP="${XPATH_ELEMENTS[3]}"
+VM_NET_BASE_NUM="${XPATH_ELEMENTS[4]}"
+
+if [ -z ${VM_NAME} ]; then
+    exit 1
+fi
+
+# Do not update DNS if no search domain defined
+if [ -z ${VM_SEARCH_DOMAIN} ]; then
+    exit 0
+fi
+
+# VM_NAME: Clean VM name
+HOST=$(clean_domain_name "${VM_NAME}")
+
+# Create DB COMMAND.
+CMD=""
+
+# Compose DNS name if BASE_NUM defined
+VM_NUM=""
+# Calculate VM number based on actual IP
+if [ ! -z ${VM_NET_BASE_NUM} ]; then
+    # Remove ending digits
+    HOST=`echo "${HOST}" | sed 's/[0-9]*$//'`
+    VM_NUM=`echo ${VM_NET_IP} | cut -d. -f4`
+    VM_NUM=00"$((VM_NUM - VM_NET_BASE_NUM))"
+    VM_NUM=${VM_NUM: -2}
+fi
+
+# construct DNS hostname and PTR hostname
+DNS_HOSTNAME="${HOST}${VM_NUM}.${VM_SEARCH_DOMAIN}"
+IP_PTR=`echo ${VM_NET_IP} | awk -F. {'print $4"."$3"."$2"."$1'}`
+DNS_PTR_DOMAIN=`echo ${VM_NET_IP} | awk -F. {'print $2"."$1'}`
+DNS_PTR_DOMAIN="${DNS_PTR_DOMAIN}.in-addr.arpa"
+DNS_PTR_HOSTNAME="${IP_PTR}.in-addr.arpa"
+
+# Delete old DNS records
+CMD="${CMD} DELETE FROM records WHERE (type = 'A' or type = 'PTR') AND one_vm = true AND (name LIKE '"${DNS_HOSTNAME}"%' or content LIKE '"${DNS_HOSTNAME}"%');"
+
+if [[ "${ACTION}" == "UPDATE" ]]; then
+    # get domain id and add DNS record
+    DOMAIN_ID=$(get_domain_id ${VM_SEARCH_DOMAIN})
+    if [ ! -z ${DOMAIN_ID} ]; then
+        CMD="${CMD} INSERT INTO records (domain_id, name, type, content, ttl, prio, change_date, one_vm) VALUES ("${DOMAIN_ID}", '"${DNS_HOSTNAME}"', 'A', '"${VM_NET_IP}"', "${TTL}", 0, "${TIMESTAMP}", true);"
+        # get domain id and add DNS PTR records
+	DOMAIN_ID_PTR=$(get_domain_id ${DNS_PTR_DOMAIN})
+	if [ ! -z ${DOMAIN_ID_PTR} ]; then
+	    CMD="${CMD} INSERT INTO records (domain_id, name, type, content, ttl, prio, change_date, one_vm) VALUES ("${DOMAIN_ID_PTR}", '"${DNS_PTR_HOSTNAME}"', 'PTR', '"${DNS_HOSTNAME}"', "${TTL}", 0, "${TIMESTAMP}", true);"
+	fi
+    fi
+fi
+
+# Launch DB command for the domain
+if [ ! -z "${CMD}" ]; then
+    CMD="START TRANSACTION; ${CMD} COMMIT;"
+    RESULT=`mysql -h${DB_HOST} -u${DB_USER} -p${DB_PASS} ${DB_NAME} -e "${CMD}"`
+    echo "${VM_NAME} DNS IP ${ACTION} done: ${DNS_HOSTNAME} ${VM_NET_IP} ${DNS_PTR_HOSTNAME} ${RESULT}" | logger -t pdns-update-host
+    if [[ "${ACTION}" == "UPDATE" ]]; then
+	echo "PDNS_HOSTNAME=${DNS_HOSTNAME}" > /tmp/upd_vm_attr.${ID}
+	onevm update ${ID} --append /tmp/upd_vm_attr.${ID}
+	rm /tmp/upd_vm_attr.${ID}
+    fi
+fi
+
+log_info "DNS ${ACTION} for VM ${VM_NAME}"
+
+exit
